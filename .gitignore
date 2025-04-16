@@ -3,3 +3,5 @@ utils/*
 __pycache__/*
 cached/*
 data/*
+fisherunlearn/__pycache__/*
+.vscode/*
