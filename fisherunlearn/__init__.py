@@ -123,7 +123,7 @@ def compute_client_information(client_idx, model, criterion, dataloader_list):
     
     return target_client_info
 
-def find_informative_params(information, method='information', info_percentage=None, param_percentage=None, graph=False):
+def find_informative_params(information, method='parameters', info_percentage=None, param_percentage=None, graph=False):
     informative_params = {}
     thresholds = {}
 
