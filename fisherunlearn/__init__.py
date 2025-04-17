@@ -147,7 +147,7 @@ def find_informative_params(information, method='parameters', info_percentage=No
             plt.show()
 
     for name, layer_info in information.items():
-        informative_params[name] = torch.argwhere(layer_info >= thresholds[name])
+        informative_params[name] = tuple(torch.argwhere(layer_info >= thresholds[name]).t())
 
     return informative_params
 
@@ -157,7 +157,7 @@ def reset_parameters(model, informative_params):
 
     for name in informative_params.keys():
         new_param = model_state[name].clone().detach()
-        new_param[tuple(informative_params[name].t())] = 0.0
+        new_param[informative_params[name]] = 0.0
         resetted_params[name] = new_param
         
     return resetted_params
