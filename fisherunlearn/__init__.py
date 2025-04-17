@@ -123,16 +123,19 @@ def compute_client_information(client_idx, model, criterion, dataloader_list):
     
     return target_client_info
 
-def find_informative_params(information, method='parameters', info_percentage=None, param_percentage=None, graph=False):
+def find_informative_params(information, method, percentage=None, graph=False, tuple=False):
     informative_params = {}
     thresholds = {}
 
     for name, layer_info in information.items():
         if method == 'information':
-            raise NotImplementedError("Information method is not implemented yet.")
+            sorted_layer_info=np.sort(layer_info.flatten())[::-1]
+            cumulative_sum = np.cumsum(sorted_layer_info)
+            threshold_idx = np.argmin(np.abs(cumulative_sum - cumulative_sum[-1] * percentage / 100))
+            thresholds[name] = sorted_layer_info[threshold_idx]
         elif method == 'parameters':
             sorted_layer_info=np.sort(layer_info.flatten())[::-1]
-            threshold_idx = int(len(sorted_layer_info) // 100 * param_percentage)
+            threshold_idx = int(len(sorted_layer_info) / 100 * percentage)
             thresholds[name] = sorted_layer_info[threshold_idx]
         else:
             raise ValueError("Invalid method. Use 'information' or 'parameters'.")
@@ -147,7 +150,10 @@ def find_informative_params(information, method='parameters', info_percentage=No
             plt.show()
 
     for name, layer_info in information.items():
-        informative_params[name] = tuple(torch.argwhere(layer_info >= thresholds[name]).t())
+        if tuple:
+            informative_params[name] = tuple(torch.argwhere(layer_info >= thresholds[name]).t())
+        else:
+            informative_params[name] = torch.argwhere(layer_info >= thresholds[name])
 
     return informative_params
 
@@ -156,8 +162,9 @@ def reset_parameters(model, informative_params):
     resetted_params = {}
 
     for name in informative_params.keys():
+        indices = tuple(informative_params[name].t())
         new_param = model_state[name].clone().detach()
-        new_param[informative_params[name]] = 0.0
+        new_param[indices] = 0.0
         resetted_params[name] = new_param
         
     return resetted_params
@@ -170,7 +177,7 @@ class UnlearnNet(nn.Module):
     scalar elements (indices) of its parameters while keeping the rest fixed.
     """
 
-    def __init__(self, base_model, indices_to_retrain):
+    def __init__(self, base_model, informative_params):
         """
         Args:
             base_model (nn.Module): The original model whose parameters 
@@ -183,21 +190,11 @@ class UnlearnNet(nn.Module):
 
         # We store the base model inside a dictionary to allow
         # functional calls later without overshadowing state_dict keys.
-        self.inner_model = {"model": base_model}
-
-        # Move any index tensors to CPU and store them.
-        self.indices_to_retrain = [idx.cpu() for idx in indices_to_retrain]
+        self.inner_model = {"model": copy.deepcopy(base_model)}
 
         # Create a copy of the base model's parameters as buffers, where
         # we zero out the positions that will be retrained.
-        base_params = {}
-        for i, (param_name, param) in enumerate(base_model.named_parameters()):
-            # Detach a clone of the original parameter
-            cloned_param = param.clone().detach()
-            # Zero-out the entries we plan to retrain
-            if len(self.indices_to_retrain[i]) > 0:
-                cloned_param[tuple(self.indices_to_retrain[i].t())] = 0
-            base_params[param_name] = cloned_param
+        base_params = reset_parameters(base_model, informative_params)
 
         # Register these base parameters as buffers so they are not optimized
         for param_name, buf in base_params.items():
@@ -206,28 +203,27 @@ class UnlearnNet(nn.Module):
 
         # Create the new learnable parameters for only the chosen indices
         retrain_params_dict = {}
-        for i, (param_name, param) in enumerate(base_model.named_parameters()):
-            if len(self.indices_to_retrain[i]) == 0:
+        for param_name, param in base_model.named_parameters():
+            if len(informative_params[param_name]) == 0:
                 continue
             # We create a 1D tensor (one entry per retrained element)
             key = param_name.replace(".", "_")
             retrain_params_dict[key] = nn.Parameter(
-                torch.zeros(len(self.indices_to_retrain[i]))
+                torch.zeros(len(informative_params[param_name]))
             )
         self.retrain_params = nn.ParameterDict(retrain_params_dict)
 
         # Build sparse masks to apply the learnable values at the correct indices
         sparse_masks = {}
-        for i, (param_name, param) in enumerate(base_model.named_parameters()):
-            if len(self.indices_to_retrain[i]) == 0:
+        for param_name, param in base_model.named_parameters():
+            if len(informative_params[param_name]) == 0:
                 continue
             # 'retrain_indices' has shape (k, n_dims). Add a final dim to index positions in the retrain-param vector.
-            retrain_indices = indices_to_retrain[i]
-            k = retrain_indices.size(0)
+            k = len(informative_params[param_name])
 
             # Create an index column [0..k-1], then concatenate it with 'retrain_indices'.
             row_idx = torch.arange(k).unsqueeze(1)
-            final_idx_matrix = torch.cat([retrain_indices, row_idx], dim=1)
+            final_idx_matrix = torch.cat([informative_params[param_name], row_idx], dim=1)
 
             # A sparse_coo_tensor expects indices with shape (ndim, nnz). Transpose to (n_dims+1, k).
             indices_for_sparse = final_idx_matrix.t().contiguous()
@@ -343,6 +339,6 @@ class UnlearnNet(nn.Module):
         
         detached_params = {}
         for key, value in final_params.items():
-            detached_params[key] = value.cpu().detach()
+            detached_params[key] = value.cpu().clone().detach()
         return detached_params
     
