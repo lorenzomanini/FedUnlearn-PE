@@ -3,6 +3,41 @@ from collections import defaultdict
 from torch.utils.data import Subset
 from typing import Optional, List
 
+def generate_dirichlet_distributions(
+    num_clients: int,
+    num_classes: int,
+    alpha: float,
+    seed: Optional[int] = None
+) -> np.ndarray:
+    """
+    Generates class distributions for clients using a symmetric Dirichlet distribution.
+
+    Args:
+        num_clients: The number of client distributions to generate.
+        num_classes: The number of classes in the dataset.
+        alpha: The concentration parameter for the Dirichlet distribution.
+               - Smaller alpha (<1.0) -> more skewed distributions per client.
+               - Larger alpha (>1.0) -> more uniform distributions per client.
+        seed: Optional random seed for reproducibility.
+
+    Returns:
+        A numpy array of shape (num_clients, num_classes) where each row
+        represents the probability distribution over classes for a client.
+        Each row sums to 1.0.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    if num_clients <= 0 or num_classes <= 0 or alpha <= 0:
+        raise ValueError("num_clients, num_classes, and alpha must be positive.")
+
+    # Sample distributions: shape (num_clients, num_classes)
+    # Each row is a sample from Dirichlet(alpha, alpha, ..., alpha)
+    class_distributions = np.random.dirichlet([alpha] * num_classes, size=num_clients)
+
+    return class_distributions
+
+
 def split_dataset_by_distribution( # Renamed for clarity
     dataset,
     # Option 1: Manual Distribution
