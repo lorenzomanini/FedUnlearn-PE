@@ -123,11 +123,15 @@ def compute_client_information(client_idx, model, criterion, dataloader_list):
     
     return target_client_info
 
-def find_informative_params(information, method, percentage=None, graph=False, tuple=False):
+def find_informative_params(information, method, percentage, whitelist=None, blacklist=None, graph=False, tuple=False):
     informative_params = {}
     thresholds = {}
 
     for name, layer_info in information.items():
+        if whitelist is not None and name not in whitelist:
+            continue
+        if blacklist is not None and name in blacklist:
+            continue
         if method == 'information':
             sorted_layer_info=np.sort(layer_info.flatten())[::-1]
             cumulative_sum = np.cumsum(sorted_layer_info)
@@ -150,10 +154,14 @@ def find_informative_params(information, method, percentage=None, graph=False, t
             plt.show()
 
     for name, layer_info in information.items():
+        if whitelist is not None and name not in whitelist:
+            continue
+        if blacklist is not None and name in blacklist:
+            continue
         if tuple:
-            informative_params[name] = tuple(torch.argwhere(layer_info >= thresholds[name]).t())
+            informative_params[name] = tuple(torch.argwhere(layer_info > thresholds[name]).t())
         else:
-            informative_params[name] = torch.argwhere(layer_info >= thresholds[name])
+            informative_params[name] = torch.argwhere(layer_info > thresholds[name])
 
     return informative_params
 
@@ -161,11 +169,14 @@ def reset_parameters(model, informative_params):
     model_state = model.state_dict()
     resetted_params = {}
 
-    for name in informative_params.keys():
-        indices = tuple(informative_params[name].t())
-        new_param = model_state[name].clone().detach()
-        new_param[indices] = 0.0
-        resetted_params[name] = new_param
+    for name in model_state.keys():
+        if name in informative_params.keys():
+            indices = tuple(informative_params[name].t())
+            new_param = model_state[name].clone().detach()
+            new_param[indices] = 0.0
+            resetted_params[name] = new_param
+        else:
+            resetted_params[name] = model_state[name].clone().detach()
         
     return resetted_params
         
