@@ -38,6 +38,9 @@ def generate_dirichlet_distributions(
     return class_distributions
 
 def split_dataset_by_class_distribution(dataset, class_distributions):
+    for dist in class_distributions:
+        assert np.isclose(np.sum(dist), 1.0), "Class distribution must sum to 1."
+
     targets = np.array(dataset.targets)
     num_classes = np.max(targets) + 1
     num_clients = len(class_distributions)
@@ -77,4 +80,4 @@ def split_dataset_by_class_distribution(dataset, class_distributions):
         # Remaining indices are discarded
 
     subsets = [Subset(dataset, indices) for indices in client_indices]
-    return subsets
+    return subsets, client_indices

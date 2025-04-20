@@ -1,5 +1,6 @@
 models/*
 utils/*
+indices/*
 __pycache__/*
 cached/*
 data/*
