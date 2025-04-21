@@ -215,6 +215,8 @@ class UnlearnNet(nn.Module):
         # Create the new learnable parameters for only the chosen indices
         retrain_params_dict = {}
         for param_name, param in base_model.named_parameters():
+            if param_name not in informative_params.keys():
+                continue
             if len(informative_params[param_name]) == 0:
                 continue
             # We create a 1D tensor (one entry per retrained element)
@@ -227,6 +229,8 @@ class UnlearnNet(nn.Module):
         # Build sparse masks to apply the learnable values at the correct indices
         sparse_masks = {}
         for param_name, param in base_model.named_parameters():
+            if param_name not in informative_params.keys():
+                continue
             if len(informative_params[param_name]) == 0:
                 continue
             # 'retrain_indices' has shape (k, n_dims). Add a final dim to index positions in the retrain-param vector.
