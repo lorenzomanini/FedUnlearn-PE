@@ -1,12 +1,13 @@
 import torch
 from torch import nn
 from backpack import backpack, extend
-from backpack.extensions import DiagHessian
+from backpack.extensions import DiagHessian, DiagGGNExact
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 import copy
+
 from tqdm import tqdm
 
 
@@ -30,11 +31,32 @@ def compute_diag_hessian(model, criterion, inputs, targets, device='cpu'):
 
     return diag_hessian_params
 
-def compute_informations(model, criterion, dataloader_list):
+def compute_diag_ggn(model, criterion, inputs, targets, device='cpu'):
+    inputs = inputs.to(device)
+    targets = targets.to(device)
+
+    model.zero_grad()
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+
+    with backpack(DiagGGNExact()):
+        loss.backward()
+
+    diag_hessian_params = {}
+    for name, param in model.named_parameters():
+        if hasattr(param, 'diag_ggn_exact') and param.requires_grad:
+            diag_hessian_params[name] = param.diag_ggn_exact.clone().detach()
+            # Cleanup to avoid leftover references
+            del param.diag_ggn_exact
+
+    return diag_hessian_params
+
+def compute_informations(model, criterion, dataloader_list, method='diag_ggn', use_converter=False):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = copy.deepcopy(model).to(device)
+    model = copy.deepcopy(model).to(device).eval()
     criterion = copy.deepcopy(criterion).to(device)
-    model = extend(model)
+    
+    model = extend(model, use_converter=use_converter)
     criterion = extend(criterion)
 
     num_clients = len(dataloader_list)
@@ -47,7 +69,12 @@ def compute_informations(model, criterion, dataloader_list):
         client_hessian = {}
         for inputs, targets in loader:
             # Compute the diag Hessian for this batch
-            diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
+            if method == 'diag_hessian':
+                diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
+            elif method == 'diag_ggn':
+                diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=device)
+            else:
+                raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
 
             # Accumulate avarage over batches
             for name, value in diag_h.items():
@@ -78,11 +105,12 @@ def compute_informations(model, criterion, dataloader_list):
     
     return clients_informations
 
-def compute_client_information(client_idx, model, criterion, dataloader_list):
+def compute_client_information(client_idx, model, criterion, dataloader_list, method='diag_ggn', use_converter=False):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = copy.deepcopy(model).to(device)
+    model = copy.deepcopy(model).to(device).eval()
     criterion = copy.deepcopy(criterion).to(device)
-    model = extend(model)
+    
+    model = extend(model, use_converter=use_converter)
     criterion = extend(criterion)
 
     num_clients = len(dataloader_list)
@@ -95,7 +123,12 @@ def compute_client_information(client_idx, model, criterion, dataloader_list):
     for loader_idx, loader in enumerate(dataloader_list):
         for inputs, targets in loader:
             # Compute the diag Hessian for this batch
-            diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
+            if method == 'diag_hessian':
+                diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
+            elif method == 'diag_ggn':
+                diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=device)
+            else:
+                raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
 
             for name, value in diag_h.items():
                 if name not in total_hessian:
@@ -122,6 +155,50 @@ def compute_client_information(client_idx, model, criterion, dataloader_list):
         target_client_info[name] = layer_info.detach().cpu()
     
     return target_client_info
+
+def plot_information_parameters_tradeoff(information, method, whitelist=None, blacklist=None):
+    percentages = np.arange(0,100,0.1)
+    information_values = np.zeros(len(percentages))
+    params_values = np.zeros(len(percentages))
+
+    total_information = 0
+    total_params = 0
+
+    for name, layer_info in information.items():
+        if whitelist is not None and name not in whitelist:
+            continue
+        if blacklist is not None and name in blacklist:
+            continue
+
+        sorted_layer_info=np.sort(layer_info.flatten())[::-1]
+        cumulative_sum = np.cumsum(sorted_layer_info)
+        total_information += cumulative_sum[-1]
+        total_params += len(sorted_layer_info)
+
+        for i, percentage in enumerate(percentages):
+            if method == 'parameters':
+                threshold_idx = int(len(sorted_layer_info) / 100 * percentage)
+                information_values[i] += cumulative_sum[threshold_idx]
+                params_values[i] += threshold_idx
+            elif method == 'information':
+                threshold_idx = np.argmin(np.abs(cumulative_sum - cumulative_sum[-1] * percentage / 100))
+                information_values[i] += cumulative_sum[threshold_idx]
+                params_values[i] += threshold_idx
+            else:
+                raise ValueError("Invalid method. Use 'information' or 'parameters'.")
+    
+    for i in range(len(information_values)):
+        information_values[i] = information_values[i] / total_information * 100
+        params_values[i] = 100 - params_values[i] / total_params * 100
+    
+    plt.plot(percentages, information_values, label='Information erased')
+    plt.plot(percentages, params_values, label='Remaining parameters')
+    plt.xlabel(f'Layer {method} percentage resetted')
+    plt.ylabel('Total percentage')
+    plt.title('Information vs Parameters tradeoff')
+    plt.legend()
+    plt.grid()
+    plt.show()
 
 def find_informative_params(information, method, percentage, whitelist=None, blacklist=None, graph=False, tuple=False):
     informative_params = {}
