@@ -6,3 +6,4 @@ cached/*
 data/*
 fisherunlearn/__pycache__/*
 .vscode/*
+sessions/*
