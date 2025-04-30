@@ -463,7 +463,8 @@ def mia_attack(model, member_loader, nonmember_loader, device, classifier_type='
                 confs.extend(conf.cpu().numpy())
                 losses.extend(loss.cpu().numpy())
                 entropies.extend(entropy.cpu().numpy())
-        return np.stack([confs, losses, entropies], axis=1)
+        return np.stack([losses], axis=1)
+        #return np.stack([confs, losses, entropies], axis=1)
 
     X_member = get_features(model, member_loader)
     X_nonmember = get_features(model, nonmember_loader)
@@ -489,7 +490,7 @@ def mia_attack(model, member_loader, nonmember_loader, device, classifier_type='
         class SimpleNN(nn.Module):
             def __init__(self):
                 super().__init__()
-                self.fc1 = nn.Linear(3, 16)
+                self.fc1 = nn.Linear(1, 16)
                 self.fc2 = nn.Linear(16, 1)
 
             def forward(self, x):
