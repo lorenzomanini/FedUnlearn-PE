@@ -13,6 +13,36 @@ from torchvision.models import resnet18
 import numpy as np
 import tqdm
 
+def compute_accuracy(model, dataloader, device=None):
+    if device is None:
+        device_ = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device_ = device
+
+    model.to(device_)
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in dataloader:
+            images, labels = images.to(device_), labels.to(device_)
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    if device is None:
+        model.cpu()
+
+    return correct / total
+
+def compute_dataloaders_accuracy(model, dataloaders):
+    accuracies = []
+    for dataloader in dataloaders:
+        accuracy = compute_accuracy(model, dataloader)
+        accuracies.append(accuracy)
+    return accuracies
+
 class Test:
     def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict={}):
 
@@ -63,9 +93,51 @@ class Test:
 
         retrainer = UnlearnNet(reset_model, informative_params)
         self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
+        retrained_model = self.model_class()
+        retrained_model.load_state_dict(retrainer.get_retrained_params())
 
         result = {}
-        # DO TESTS HERE
+        
+        # Create dataloaders
+        test_dataloader = DataLoader(self.test_dataset, batch_size=32, shuffle=False)
+        target_dataloader = DataLoader(self.clients_subsets[self.target_client], batch_size=32, shuffle=False)
+        clients_dataloaders = [DataLoader(subset, batch_size=32, shuffle=False) for subset in self.clients_subsets]
+
+        classes_subsets = split_dataset_by_class_distribution(self.test_dataset, np.identity(self.num_classes))
+        class_dataloaders = [DataLoader(subset, batch_size=32, shuffle=False) for subset in classes_subsets]
+
+        # Compute accuracies
+        try:
+            result['trained_test_accuracy'] = self.trained_test_accuracy
+            result['trained_target_accuracy'] = self.trained_target_accuracy
+            result['trained_clients_accuracies'] = self.trained_clients_accuracies
+            result['trained_class_accuracies'] = self.trained_class_accuracies
+        except:
+            result['trained_test_accuracy'] = self.trained_test_accuracy = compute_accuracy(self.trained_model, test_dataloader)
+            result['trained_target_accuracy'] = self.trained_target_accuracy = compute_accuracy(self.trained_model, target_dataloader)
+            result['trained_clients_accuracies'] = self.trained_clients_accuracies = compute_dataloaders_accuracy(self.trained_model, clients_dataloaders)
+            result['trained_class_accuracies'] = self.trained_class_accuracies = compute_dataloaders_accuracy(self.trained_model, class_dataloaders)
+
+        try:
+            result['benchmark_test_accuracy'] = self.benchmark_test_accuracy
+            result['benchmark_target_accuracy'] = self.benchmark_target_accuracy
+            result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies
+            result['benchmark_class_accuracies'] = self.benchmark_class_accuracies
+        except:
+            result['benchmark_test_accuracy'] = self.benchmark_test_accuracy = compute_accuracy(self.benchmark_model, test_dataloader)
+            result['benchmark_target_accuracy'] = self.benchmark_target_accuracy = compute_accuracy(self.benchmark_model, target_dataloader)
+            result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies = compute_dataloaders_accuracy(self.benchmark_model, clients_dataloaders)
+            result['benchmark_class_accuracies'] = self.benchmark_class_accuracies = compute_dataloaders_accuracy(self.benchmark_model, class_dataloaders)  
+        
+        result['reset_test_accuracy'] =  compute_accuracy(reset_model, test_dataloader)
+        result['reset_target_accuracy'] = compute_accuracy(reset_model, target_dataloader)
+        result['reset_clients_accuracies'] = compute_dataloaders_accuracy(reset_model, clients_dataloaders)
+        result['reset_class_accuracies'] = compute_dataloaders_accuracy(reset_model, class_dataloaders)
+
+        result['retrained_test_accuracy'] = compute_accuracy(retrained_model, test_dataloader)
+        result['retrained_target_accuracy'] = compute_accuracy(retrained_model, target_dataloader)
+        result['retrained_clients_accuracies'] = compute_dataloaders_accuracy(retrained_model, clients_dataloaders)
+        result['retrained_class_accuracies'] = compute_dataloaders_accuracy(retrained_model, class_dataloaders)
 
         return result
 
@@ -182,8 +254,7 @@ def get_trainer_function(init_params_dict):
             dataloader = DataLoader(concatenate_subsets(subsets), batch_size=32, shuffle=True)
             model.to(device)
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            for epoch in range(epochs):
-                print(f"Epoch {epoch+1}/{epochs}")
+            for epoch in tqdm.tqdm(range(epochs), desc="Training", unit="epoch"):
                 for inputs, targets in dataloader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     optimizer.zero_grad()
@@ -281,25 +352,25 @@ if __name__ == "__main__":
         'model_name': 'simple_cnn',
         'loss_name': 'cross_entropy',
         'trainer_name': 'sgd',
-        'train_epochs': 1,
-        'info_batch_size': 8,
+        'train_epochs': 5,
+        'info_batch_size': 10,
         'info_use_converter': False,
         'target_client': 0,
-        'num_tests': 5
+        'num_tests': 10
     }
 
-    test_params_dicts = [
-        {
+    test_params_dict = {
+            'subtest': 0,
             'unlearning_method': 'information',
-            'unlearning_percentage': 20,
-            'retrain_epochs': 2
-        },
-        {
-            'unlearning_method': 'information',
-            'unlearning_percentage': 25,
             'retrain_epochs': 2
         }
-    ]
+    
+    percentages = np.arange(0, 80, 10)
+    test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
+    for i, percentage in enumerate(percentages):
+        test_params_dicts[i]['unlearning_percentage'] = percentage
+
+    print(test_params_dicts)
 
     save_path = './stat_tests'
     run_repeated_tests(init_params_dict, test_params_dicts, init_params_dict['num_tests'], save_path)
