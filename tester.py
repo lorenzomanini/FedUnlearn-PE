@@ -1,72 +1,53 @@
-from fisherunlearn.clients_utils import split_dataset_by_class_distribution
+from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets
 from fisherunlearn import compute_client_information, find_informative_params, reset_parameters
 from fisherunlearn import UnlearnNet
-
-from torch.utils.data import DataLoader
 
 import os
 import pickle
 
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 from torchvision.models import resnet18
 
 import numpy as np
 import tqdm
 
-def concatenate_subsets(subsets):
-    # THE SUBSETS MUST BE NON OVERLAPPING
-    indices = []
-    for subset in subsets:
-        indices.extend(subset.indices)
-    full_dataset = subsets[0].dataset
-    return torch.utils.data.Subset(full_dataset, indices)
-
 class Test:
-    def __init__(self, train_dataset, test_dataset, clients_class_dist, model_class, loss_class, trainer_function, init_params_dict={}):
+    def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict={}):
 
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
-        self.clients_class_dist = clients_class_dist
-        
+        self.clients_subsets = clients_subsets
         self.target_client = init_params_dict.get('target_client', 0)
-        self.batch_size = init_params_dict.get('batch_size', 32)
+        
         self.model_class = model_class
         self.loss_class = loss_class
         self.trainer_function = trainer_function
 
         self.num_classes = init_params_dict['num_classes']
-        self.train_epochs = init_params_dict.get('train_epochs', 100)
+        self.train_epochs = init_params_dict['train_epochs']
+
+        self.info_batch_size = init_params_dict.get('info_batch_size', 15)
+        self.info_use_converter = init_params_dict.get('info_use_converter', True)
+
+        self.benchmark_datasets = list(self.clients_subsets)
+        self.benchmark_datasets.pop(self.target_client)
+        self.clients_indices = [subset.indices for subset in clients_subsets]
 
         # Attributes initialized in init_new_test()
-        self.test_dataloader = None
-        self.target_dataloader = None
-        self.classes_dataloaders = None
-
-        self.clients_indices = None
         self.trained_model = None
         self.benchmark_model = None
         self.client_information = None
 
-    def init_new_test(self):
-        # Create dataloaders
-        self.clients_datasets, self.clients_indices = split_dataset_by_class_distribution(self.train_dataset, self.clients_class_dist)
-        
-        self.benchmark_datasets = list(self.clients_datasets)
-        self.benchmark_datasets.pop(self.target_client)
-
-        self.test_dataloader = DataLoader(self.test_dataset, self.batch_size, shuffle=False)
-        self.target_dataloader = DataLoader(self.clients_datasets[self.target_client], self.batch_size, shuffle=False)
-
-        classes_subsets,_ = split_dataset_by_class_distribution(self.train_dataset, np.identity(self.num_classes))
-        self.classes_dataloaders = [ DataLoader(subset, self.batch_size, shuffle=False) for subset in classes_subsets]
-
+    def init_new_test(self):      
         # Train models
-        self.trained_model = self.trainer_function(self.model_class(), self.loss_class(), self.clients_datasets, self.train_epochs)
+        self.trained_model = self.trainer_function(self.model_class(), self.loss_class(), self.clients_subsets, self.train_epochs)
+
         self.benchmark_model = self.trainer_function(self.model_class(), self.loss_class(), self.benchmark_datasets, self.train_epochs)
 
         # Compute information
-        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, batch_size=15, use_converter=True)
+        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, batch_size=self.info_batch_size, use_converter=self.info_use_converter)
 
     def run_test(self, test_params_dict):
         unlearning_method = test_params_dict['unlearning_method']
@@ -89,7 +70,8 @@ class Test:
         return result
 
 
-def get_datasets(dataset_name):
+def get_datasets(init_params_dict):
+    dataset_name = init_params_dict['dataset_name']
     if dataset_name == 'mnist':
         from torchvision.datasets import MNIST
         from torchvision import transforms
@@ -102,64 +84,87 @@ def get_datasets(dataset_name):
         from torchvision.datasets import CIFAR10
         from torchvision import transforms
 
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        train_dataset = CIFAR10(root='./data', train=True, download=True, transform=transform)
-        test_dataset = CIFAR10(root='./data', train=False, download=True, transform=transform)
+        data_transforms = {
+            'train': transforms.Compose([
+                transforms.Resize(64),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ]),
+            'test': transforms.Compose([
+                transforms.Resize(64),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ]),
+        }
+
+        train_dataset = CIFAR10(root='./data', train=True, download=True, transform=data_transforms["train"])
+        test_dataset = CIFAR10(root='./data', train=False, download=True, transform=data_transforms["test"])
 
     else:
         raise ValueError("Unsupported dataset name")
 
     return train_dataset, test_dataset
 
-def get_clients_class_distribution(num_clients, num_classes, distribution_type):
+def get_clients_subsets(dataset, init_params_dict):
+    num_clients = init_params_dict['num_clients']
+    num_classes = init_params_dict['num_classes']
+    distribution_type = init_params_dict['distribution_type']
+
     if distribution_type == 'preferential_class':
         if num_clients > num_classes:
             raise ValueError("Number of clients must be less than or equal to number of classes for preferential_class distribution")
         
         num_common_classes = num_classes - num_clients
-        p = 1 / (num_common_classes + 1)
+        p_common = 1 / (num_common_classes + num_clients)
+        p_preferred = p_common * num_clients
         class_distribution = np.zeros((num_clients, num_classes))
         for i in range(num_clients):
             for j in range(num_common_classes):
-                class_distribution[i, j] = p
-            class_distribution[i, num_common_classes+i] = p
+                class_distribution[i, j] = p_common
+            class_distribution[i, num_common_classes+i] = p_preferred
+        return split_dataset_by_class_distribution(dataset, class_distribution)
 
     elif distribution_type == 'uniform':
         class_distribution = np.ones((num_clients, num_classes)) / num_classes
+        return split_dataset_by_class_distribution(dataset, class_distribution)
 
-    elif distribution_type == 'random':
+    elif distribution_type == 'dirichlet':
         class_distribution = np.random.dirichlet(np.ones(num_classes), num_clients)
+        return split_dataset_by_class_distribution(dataset, class_distribution)
+    
+    elif distribution_type == 'random':
+        lengths = [1 / num_clients] * num_clients
+        return torch.utils.data.random_split(dataset, lengths)
 
     else:
         raise ValueError("Unsupported distribution type")
-    
-    assert np.all(np.isclose(np.sum(class_distribution, axis=1), 1.0)), "Class distributions must sum to 1."
-    return class_distribution
 
-class FLNet(nn.Sequential):
-    def __init__(self):
-        super(FLNet, self).__init__(
-            nn.Conv2d(1, 32, 5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 5, padding=2),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Flatten(),
-            nn.Linear(64 * 7 * 7, 512),
-            nn.ReLU(),
-            nn.Linear(512, 10)
-        )
-
-def get_model_class(model_name):
+def get_model_class(init_params_dict):
+    model_name = init_params_dict['model_name']
     if model_name == 'simple_cnn':
+        class FLNet(nn.Sequential):
+            def __init__(self):
+                super(FLNet, self).__init__(
+                    nn.Conv2d(1, 32, 5, padding=2),
+                    nn.ReLU(),
+                    nn.MaxPool2d(2),
+                    nn.Conv2d(32, 64, 5, padding=2),
+                    nn.ReLU(),
+                    nn.MaxPool2d(2),
+                    nn.Flatten(),
+                    nn.Linear(64 * 7 * 7, 512),
+                    nn.ReLU(),
+                    nn.Linear(512, 10)
+                    )
         return FLNet
     elif model_name == 'resnet18':
-        return resnet18
+        num_classes = init_params_dict['num_classes']
+        return lambda: resnet18(num_classes=num_classes)
     else:
         raise ValueError("Unsupported model name")
     
-def get_loss_class(loss_name):
+def get_loss_class(init_params_dict):
+    loss_name = init_params_dict['loss_name']
     if loss_name == 'cross_entropy':
         return nn.CrossEntropyLoss
     elif loss_name == 'mse':
@@ -167,7 +172,8 @@ def get_loss_class(loss_name):
     else:
         raise ValueError("Unsupported loss name")
     
-def get_trainer_function(trainer_name):
+def get_trainer_function(init_params_dict):
+    trainer_name = init_params_dict['trainer_name']
     if trainer_name == 'sgd':
         def trainer(model, loss_fn, subsets, epochs):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -208,11 +214,12 @@ def run_repeated_tests(init_params_dict, test_params_dicts, num_tests, save_path
     if not os.path.exists(test_path):
         os.makedirs(test_path)
     else:
+        orig_path = test_path
         i = 1
-        test_path = f"{test_path} ({i})"
+        test_path = f"{orig_path} ({i})"
         while os.path.exists(test_path):
             i += 1
-            test_path = f"{test_path} ({i})"
+            test_path = f"{orig_path} ({i})"
         os.makedirs(test_path)
     
     init_params_dict_path = os.path.join(test_path, "init_params.pkl")
@@ -225,20 +232,15 @@ def run_repeated_tests(init_params_dict, test_params_dicts, num_tests, save_path
     # Parse init_params_dict
     num_tests = init_params_dict['num_tests']
 
-    dataset_name = init_params_dict['dataset_name']
-    num_clients = init_params_dict['num_clients']
-    num_classes = init_params_dict['num_classes']
-    distribution_type = init_params_dict['distribution_type']
+    train_dataset, test_dataset = get_datasets(init_params_dict)
+    clients_subsets = get_clients_subsets(train_dataset, init_params_dict)
 
-    train_dataset, test_dataset = get_datasets(dataset_name)
-    clients_class_dist = get_clients_class_distribution(num_clients, num_classes, distribution_type)
-
-    model_class = get_model_class(init_params_dict['model_name'])
-    loss_class = get_loss_class(init_params_dict['loss_name'])
-    trainer_function = get_trainer_function(init_params_dict['trainer_name'])
+    model_class = get_model_class(init_params_dict)
+    loss_class = get_loss_class(init_params_dict)
+    trainer_function = get_trainer_function(init_params_dict)
 
     # Create a test instance
-    test_instance = Test(train_dataset, test_dataset, clients_class_dist, model_class, loss_class, trainer_function, init_params_dict)
+    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
 
     for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
         test_iter_path = os.path.join(test_path, f"test_{i}")
@@ -271,16 +273,17 @@ def run_repeated_tests(init_params_dict, test_params_dicts, num_tests, save_path
 if __name__ == "__main__":
     # Example usage
     init_params_dict = {
-        'test_name': 'test_1',
+        'test_name': 'test_mnist',
         'dataset_name': 'mnist',
         'num_clients': 5,
         'num_classes': 10,
-        'distribution_type': 'preferential_class',
+        'distribution_type': 'dirichlet',
         'model_name': 'simple_cnn',
         'loss_name': 'cross_entropy',
         'trainer_name': 'sgd',
         'train_epochs': 1,
-        'batch_size': 32,
+        'info_batch_size': 8,
+        'info_use_converter': False,
         'target_client': 0,
         'num_tests': 5
     }
@@ -289,16 +292,16 @@ if __name__ == "__main__":
         {
             'unlearning_method': 'information',
             'unlearning_percentage': 20,
-            'retrain_epochs': 1
+            'retrain_epochs': 2
         },
         {
             'unlearning_method': 'information',
             'unlearning_percentage': 25,
-            'retrain_epochs': 1
+            'retrain_epochs': 2
         }
     ]
 
-    save_path = './first_test'
+    save_path = './stat_tests'
     run_repeated_tests(init_params_dict, test_params_dicts, init_params_dict['num_tests'], save_path)
 
 

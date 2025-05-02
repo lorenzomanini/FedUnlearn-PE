@@ -7,4 +7,4 @@ data/*
 fisherunlearn/__pycache__/*
 .vscode/*
 sessions/*
-first_test/*
+stat_tests/*

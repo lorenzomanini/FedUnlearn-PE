@@ -39,4 +39,12 @@ def split_dataset_by_class_distribution(dataset, class_distributions):
             start += count
 
     subsets = [Subset(dataset, indices) for indices in client_indices]
-    return subsets, client_indices
+    return subsets
+
+def concatenate_subsets(subsets):
+    # THE SUBSETS MUST BE NON OVERLAPPING
+    indices = []
+    for subset in subsets:
+        indices.extend(subset.indices)
+    full_dataset = subsets[0].dataset
+    return Subset(full_dataset, indices)
