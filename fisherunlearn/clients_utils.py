@@ -42,7 +42,7 @@ def split_dataset_by_class_distribution(dataset, class_distributions):
         assert np.isclose(np.sum(dist), 1.0), "Class distribution must sum to 1."
 
     targets = np.array(dataset.targets)
-    num_classes = np.max(targets) + 1
+    num_classes = len(class_distributions[0])
     num_clients = len(class_distributions)
 
     class_indices = defaultdict(list)
@@ -55,26 +55,24 @@ def split_dataset_by_class_distribution(dataset, class_distributions):
     client_indices = [[] for _ in range(num_clients)]
 
     # Crop samples so that each client has roughly the same number of samples
-    total_requested = sum(class_distributions)
-    most_requested = np.max(total_requested)
-    class_proportions = total_requested / most_requested
-    samples_per_class = np.array([int(class_proportions[cls] * len(class_indices[cls])) for cls in range(num_classes)])
-    class_indices = [class_indices[cls][:samples_per_class[cls]] for cls in range(num_classes)]
-
+    total_requested_per_class = sum(class_distributions)
+    total_requested = np.sum(total_requested_per_class)
+    requested_class_dist = total_requested_per_class / total_requested
+    available_class_dist = np.array([len(class_indices[cls]) for cls in range(num_classes)]) / len(targets)
+    normalization_factor = np.max(requested_class_dist / available_class_dist)
 
     for cls in range(num_classes):
         indices = class_indices[cls]
         total = len(indices)
 
-        proportions = np.array([dist[cls] for dist in class_distributions])
-        proportions /= proportions.sum()  # just in case
+        proportions = class_distributions[:, cls] / (total_requested_per_class[cls] * normalization_factor)
+        samples_per_client = np.round(proportions * total).astype(int)
+        samples_per_client = np.clip(samples_per_client, 0, total)
 
-        # Only floor allocation, no rounding up
-        counts = np.floor(proportions * total).astype(int)
 
         # Assign indices, ignore leftovers
         start = 0
-        for client_id, count in enumerate(counts):
+        for client_id, count in enumerate(samples_per_client):
             client_indices[client_id].extend(indices[start:start + count])
             start += count
         # Remaining indices are discarded

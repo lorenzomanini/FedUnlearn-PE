@@ -1,5 +1,7 @@
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
+
 import torch.nn.functional as F
 from backpack import backpack, extend
 from backpack.extensions import DiagHessian, DiagGGNExact
@@ -111,7 +113,7 @@ def compute_informations(model, criterion, dataloader_list, method='diag_ggn', u
     
     return clients_informations
 
-def compute_client_information(client_idx, model, criterion, dataloader_list, method='diag_ggn', use_converter=False):
+def compute_client_information(client_idx, model, criterion, datasets_list, batch_size=1, method='diag_ggn', use_converter=True):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = copy.deepcopy(model).to(device).eval()
     criterion = copy.deepcopy(criterion).to(device)
@@ -119,9 +121,11 @@ def compute_client_information(client_idx, model, criterion, dataloader_list, me
     model = extend(model, use_converter=use_converter)
     criterion = extend(criterion)
 
-    num_clients = len(dataloader_list)
+    num_clients = len(datasets_list)
     target_client_hessian = {}
     total_hessian = {}
+
+    dataloader_list = [DataLoader(dataset, batch_size, shuffle=False) for dataset in datasets_list]
 
     num_batches = sum(len(loader) for loader in dataloader_list)
     tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch")    
