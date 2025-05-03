@@ -25,16 +25,17 @@ def split_dataset_by_class_distribution(dataset, class_distributions):
     total_requested = np.sum(total_requested_per_class)
     requested_class_dist = total_requested_per_class / total_requested
     available_class_dist = np.array([len(class_indices[cls]) for cls in range(num_classes)]) / len(targets)
-    normalization_factor = np.max(requested_class_dist / available_class_dist)
+    limiting_class = np.argmax(requested_class_dist - available_class_dist)
+    total_client_samples = np.floor(len(class_indices[limiting_class]) / total_requested_per_class[limiting_class])
 
-    samples_distributions = np.round(class_distributions * len(targets) / (normalization_factor * num_clients)).astype(int)
+    samples_distributions = np.floor(class_distributions * total_client_samples).astype(int)
 
     for cls in range(num_classes):
         indices = class_indices[cls]
-        samples_per_client = np.clip(samples_distributions[:, cls], 0, len(indices))
+        samples_distribution = samples_distributions[:, cls]
 
         start = 0
-        for client_id, count in enumerate(samples_per_client):
+        for client_id, count in enumerate(samples_distribution):
             client_indices[client_id].extend(indices[start:start + count])
             start += count
 
