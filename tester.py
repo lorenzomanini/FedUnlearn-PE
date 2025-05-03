@@ -1,5 +1,5 @@
 from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets
-from fisherunlearn import compute_client_information, find_informative_params, reset_parameters
+from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 
 import os
@@ -23,6 +23,9 @@ def compute_accuracy(model, dataloader, device=None):
     model.eval()
     correct = 0
     total = 0
+
+    tqdm_bar = tqdm.tqdm(total=len(dataloader), desc="Computing accuracy", unit="batch", leave=False)
+
     with torch.no_grad():
         for images, labels in dataloader:
             images, labels = images.to(device_), labels.to(device_)
@@ -30,6 +33,9 @@ def compute_accuracy(model, dataloader, device=None):
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
+            tqdm_bar.update(1)
+    
+    tqdm_bar.close()
 
     if device is None:
         model.cpu()
@@ -144,11 +150,16 @@ class Test:
 
 def get_datasets(init_params_dict):
     dataset_name = init_params_dict['dataset_name']
+    model_name = init_params_dict['model_name']
     if dataset_name == 'mnist':
         from torchvision.datasets import MNIST
         from torchvision import transforms
 
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+        if model_name == 'simple_cnn':
+            transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+        else:
+            raise ValueError("Unsupported model name for MNIST dataset")
+        
         train_dataset = MNIST(root='./data', train=True, download=True, transform=transform)
         test_dataset = MNIST(root='./data', train=False, download=True, transform=transform)
 
@@ -156,21 +167,19 @@ def get_datasets(init_params_dict):
         from torchvision.datasets import CIFAR10
         from torchvision import transforms
 
-        data_transforms = {
-            'train': transforms.Compose([
-                transforms.Resize(64),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ]),
-            'test': transforms.Compose([
-                transforms.Resize(64),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ]),
-        }
+        if model_name == 'simple_cnn':
+            transform = transforms.Compose([transforms.Resize(32), transforms.Grayscale(num_output_channels=1), transforms.ToTensor(), transforms.Normalize((0.5), (0.5), (0.5))])
+        elif model_name == 'resnet18':
+            transform = transforms.Compose([
+                    transforms.Resize(64),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                ])
+        else:
+            raise ValueError("Unsupported model name for CIFAR10 dataset")
 
-        train_dataset = CIFAR10(root='./data', train=True, download=True, transform=data_transforms["train"])
-        test_dataset = CIFAR10(root='./data', train=False, download=True, transform=data_transforms["test"])
+        train_dataset = CIFAR10(root='./data', train=True, download=True, transform=transform)
+        test_dataset = CIFAR10(root='./data', train=False, download=True, transform=transform)
 
     else:
         raise ValueError("Unsupported dataset name")
@@ -254,7 +263,7 @@ def get_trainer_function(init_params_dict):
             dataloader = DataLoader(concatenate_subsets(subsets), batch_size=32, shuffle=True)
             model.to(device)
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            for epoch in tqdm.tqdm(range(epochs), desc="Training", unit="epoch"):
+            for epoch in tqdm.tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
                 for inputs, targets in dataloader:
                     inputs, targets = inputs.to(device), targets.to(device)
                     optimizer.zero_grad()
@@ -332,7 +341,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, num_tests, save_path
             pickle.dump(test_instance.client_information, f)
         
         test_results = []
-        for test_params_dict in tqdm.tqdm(test_params_dicts, desc="Running tests"):
+        for test_params_dict in tqdm.tqdm(test_params_dicts, desc="Running tests", leave=False):
             test_result = test_instance.run_test(test_params_dict)
             test_results.append(test_result)
 
@@ -344,11 +353,11 @@ def run_repeated_tests(init_params_dict, test_params_dicts, num_tests, save_path
 if __name__ == "__main__":
     # Example usage
     init_params_dict = {
-        'test_name': 'test_mnist',
+        'test_name': 'test_mnist_3',
         'dataset_name': 'mnist',
         'num_clients': 5,
         'num_classes': 10,
-        'distribution_type': 'dirichlet',
+        'distribution_type': 'random',
         'model_name': 'simple_cnn',
         'loss_name': 'cross_entropy',
         'trainer_name': 'sgd',
@@ -362,39 +371,13 @@ if __name__ == "__main__":
     test_params_dict = {
             'subtest': 0,
             'unlearning_method': 'information',
-            'retrain_epochs': 2
+            'retrain_epochs': 1
         }
     
-    percentages = np.arange(0, 80, 10)
+    percentages = np.arange(5, 45, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
 
-    print(test_params_dicts)
-
     save_path = './stat_tests'
     run_repeated_tests(init_params_dict, test_params_dicts, init_params_dict['num_tests'], save_path)
-
-
-
-
-
-
-
-            
-        
-
-
-
-
-
-        
-        
-
-
-
-
-
-
-
-

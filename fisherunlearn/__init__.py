@@ -128,7 +128,7 @@ def compute_client_information(client_idx, model, criterion, datasets_list, batc
     dataloader_list = [DataLoader(dataset, batch_size, shuffle=False) for dataset in datasets_list]
 
     num_batches = sum(len(loader) for loader in dataloader_list)
-    tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch")    
+    tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch", leave=False)    
 
     for loader_idx, loader in enumerate(dataloader_list):
         for inputs, targets in loader:
