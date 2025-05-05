@@ -113,7 +113,11 @@ def compute_informations(model, criterion, dataloader_list, method='diag_ggn', u
     
     return clients_informations
 
-def compute_client_information(client_idx, model, criterion, datasets_list, batch_size=1, method='diag_ggn', use_converter=True):
+
+if 'INFO_BATCH_SIZE' not in globals():
+    INFO_BATCH_SIZE = 1
+
+def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', use_converter=True):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = copy.deepcopy(model).to(device).eval()
     criterion = copy.deepcopy(criterion).to(device)
@@ -125,7 +129,7 @@ def compute_client_information(client_idx, model, criterion, datasets_list, batc
     target_client_hessian = {}
     total_hessian = {}
 
-    dataloader_list = [DataLoader(dataset, batch_size, shuffle=False) for dataset in datasets_list]
+    dataloader_list = [DataLoader(dataset, INFO_BATCH_SIZE, shuffle=False) for dataset in datasets_list]
 
     num_batches = sum(len(loader) for loader in dataloader_list)
     tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch", leave=False)    
@@ -443,9 +447,19 @@ class UnlearnNet(nn.Module):
         for key, value in final_params.items():
             detached_params[key] = value.cpu().clone().detach()
         return detached_params
-    
 
-def mia_attack(model, member_loader, nonmember_loader, device, classifier_type='logistic'):
+
+if 'MIA_BATCH_SIZE' not in globals():
+    MIA_BATCH_SIZE = 1
+
+def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logistic', plot=False):
+
+    print(f"MIA_BATCH_SIZE: {MIA_BATCH_SIZE}")
+    member_loader = DataLoader(member_dataset, MIA_BATCH_SIZE, shuffle=False)
+    nonmember_loader = DataLoader(nonmember_dataset, MIA_BATCH_SIZE, shuffle=False)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    model.eval()
     
     if classifier_type not in ['logistic', 'svm', 'linear', 'nn']:
         raise ValueError("Invalid classifier_type: choose 'logistic', 'svm', 'linear', or 'nn'.")
@@ -529,17 +543,18 @@ def mia_attack(model, member_loader, nonmember_loader, device, classifier_type='
         auc = roc_auc_score(y_test, y_score)
         acc = accuracy_score(y_test, y_pred)
 
-    fpr, tpr, _ = roc_curve(y if classifier_type != 'nn' else y_test, y_score)
-    plt.figure(figsize=(6, 5))
-    plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {auc:.4f})')
-    plt.plot([0, 1], [0, 1], 'k--', label='Random Guess')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title(f'Membership Inference ROC Curve ({classifier_type})')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+    if plot:
+        fpr, tpr, _ = roc_curve(y if classifier_type != 'nn' else y_test, y_score)
+        plt.figure(figsize=(6, 5))
+        plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {auc:.4f})')
+        plt.plot([0, 1], [0, 1], 'k--', label='Random Guess')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'Membership Inference ROC Curve ({classifier_type})')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
 
-    print(f"[MIA: {classifier_type}] AUC = {auc:.4f}, Accuracy = {acc:.4f}")
+        print(f"[MIA: {classifier_type}] AUC = {auc:.4f}, Accuracy = {acc:.4f}")
     return auc, acc
