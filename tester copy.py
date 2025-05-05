@@ -119,101 +119,97 @@ def mia_attack(model, member_loader, nonmember_loader, device, classifier_type='
     auc, acc = 0.5, 0.5
     y_true_plot, y_score_plot = y, np.zeros_like(y, dtype=float)
 
-    try:
-        if classifier_type in ['logistic', 'svm', 'linear']:
-            logging.debug(f"MIA: Training {classifier_type} classifier...")
-            if classifier_type == 'logistic':
-                clf = LogisticRegression(max_iter=1000, random_state=42, C=1.0, solver='liblinear')
-            elif classifier_type == 'svm':
-                clf = SVC(probability=True, random_state=42, gamma='auto')
-            elif classifier_type == 'linear':
-                clf = SGDClassifier(loss='log_loss', max_iter=1000, random_state=42, tol=1e-3)
 
-            clf.fit(X, y)
-            y_pred = clf.predict(X)
-            y_score = clf.predict_proba(X)[:, 1]
-            y_true = y
-            auc = roc_auc_score(y_true, y_score)
-            acc = accuracy_score(y_true, y_pred)
-            y_true_plot, y_score_plot = y_true, y_score
+    if classifier_type in ['logistic', 'svm', 'linear']:
+        logging.debug(f"MIA: Training {classifier_type} classifier...")
+        if classifier_type == 'logistic':
+            clf = LogisticRegression(max_iter=1000, random_state=42, C=1.0, solver='liblinear')
+        elif classifier_type == 'svm':
+            clf = SVC(probability=True, random_state=42, gamma='auto')
+        elif classifier_type == 'linear':
+            clf = SGDClassifier(loss='log_loss', max_iter=1000, random_state=42, tol=1e-3)
 
-        elif classifier_type == 'nn':
-            logging.debug("MIA: Training NN classifier...")
-            class SimpleNN(nn.Module):
-                def __init__(self, input_dim=1):
-                    super().__init__()
-                    self.fc1 = nn.Linear(input_dim, 16)
-                    self.fc2 = nn.Linear(16, 1)
+        clf.fit(X, y)
+        y_pred = clf.predict(X)
+        y_score = clf.predict_proba(X)[:, 1]
+        y_true = y
+        auc = roc_auc_score(y_true, y_score)
+        acc = accuracy_score(y_true, y_pred)
+        y_true_plot, y_score_plot = y_true, y_score
 
-                def forward(self, x):
-                    x = torch.relu(self.fc1(x))
-                    x = torch.sigmoid(self.fc2(x))
-                    return x
+    elif classifier_type == 'nn':
+        logging.debug("MIA: Training NN classifier...")
+        class SimpleNN(nn.Module):
+            def __init__(self, input_dim=1):
+                super().__init__()
+                self.fc1 = nn.Linear(input_dim, 16)
+                self.fc2 = nn.Linear(16, 1)
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+            def forward(self, x):
+                x = torch.relu(self.fc1(x))
+                x = torch.sigmoid(self.fc2(x))
+                return x
 
-            if len(X_train) == 0 or len(X_test) == 0:
-                 logging.warning("MIA NN: Train or test split is empty. Skipping NN training.")
-                 return 0.5, 0.5
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
 
-            input_dim = X_train.shape[1]
-            model_nn = SimpleNN(input_dim).to(device)
-            optimizer = torch.optim.Adam(model_nn.parameters(), lr=0.005)
-            criterion = nn.BCELoss()
+        if len(X_train) == 0 or len(X_test) == 0:
+                logging.warning("MIA NN: Train or test split is empty. Skipping NN training.")
+                return 0.5, 0.5
 
-            X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
-            y_train_tensor = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32).to(device)
-            X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
+        input_dim = X_train.shape[1]
+        model_nn = SimpleNN(input_dim).to(device)
+        optimizer = torch.optim.Adam(model_nn.parameters(), lr=0.005)
+        criterion = nn.BCELoss()
 
-            epochs = 100
-            batch_size_nn = 32
-            train_dataset_nn = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
-            train_loader_nn = torch.utils.data.DataLoader(train_dataset_nn, batch_size=batch_size_nn, shuffle=True)
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+        y_train_tensor = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32).to(device)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
 
-            model_nn.train()
-            for epoch in range(epochs):
-                for batch_x, batch_y in train_loader_nn:
-                    optimizer.zero_grad()
-                    outputs = model_nn(batch_x)
-                    loss = criterion(outputs, batch_y)
-                    loss.backward()
-                    optimizer.step()
+        epochs = 100
+        batch_size_nn = 32
+        train_dataset_nn = torch.utils.data.TensorDataset(X_train_tensor, y_train_tensor)
+        train_loader_nn = torch.utils.data.DataLoader(train_dataset_nn, batch_size=batch_size_nn, shuffle=True)
 
-            model_nn.eval()
-            with torch.no_grad():
-                y_score = model_nn(X_test_tensor).cpu().numpy().flatten()
-                y_pred = (y_score > 0.5).astype(int)
+        model_nn.train()
+        for epoch in range(epochs):
+            for batch_x, batch_y in train_loader_nn:
+                optimizer.zero_grad()
+                outputs = model_nn(batch_x)
+                loss = criterion(outputs, batch_y)
+                loss.backward()
+                optimizer.step()
 
-            if len(np.unique(y_test)) > 1:
-                 auc = roc_auc_score(y_test, y_score)
-            else:
-                 auc = 0.5
-            acc = accuracy_score(y_test, y_pred)
-            y_true_plot, y_score_plot = y_test, y_score
+        model_nn.eval()
+        with torch.no_grad():
+            y_score = model_nn(X_test_tensor).cpu().numpy().flatten()
+            y_pred = (y_score > 0.5).astype(int)
 
-        if plot_roc and len(np.unique(y_true_plot)) > 1:
-            fpr, tpr, _ = roc_curve(y_true_plot, y_score_plot)
-            plt.figure(figsize=(6, 5))
-            plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {auc:.4f})')
-            plt.plot([0, 1], [0, 1], 'k--', label='Random Guess (AUC = 0.5)')
-            plt.xlabel('False Positive Rate')
-            plt.ylabel('True Positive Rate')
-            plt.title(f'Membership Inference ROC ({classifier_type})')
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            if save_plot_path:
-                plt.savefig(save_plot_path)
-                logging.info(f"MIA ROC curve saved to {save_plot_path}")
-                plt.close()
-            else:
-                plt.close()
-        elif plot_roc:
-            logging.warning("MIA Plotting skipped: Only one class present in labels.")
+        if len(np.unique(y_test)) > 1:
+                auc = roc_auc_score(y_test, y_score)
+        else:
+                auc = 0.5
+        acc = accuracy_score(y_test, y_pred)
+        y_true_plot, y_score_plot = y_test, y_score
 
-    except Exception as e:
-        logging.error(f"MIA failed during classifier training/evaluation: {e}", exc_info=True)
-        return 0.5, 0.5
+    if plot_roc and len(np.unique(y_true_plot)) > 1:
+        fpr, tpr, _ = roc_curve(y_true_plot, y_score_plot)
+        plt.figure(figsize=(6, 5))
+        plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {auc:.4f})')
+        plt.plot([0, 1], [0, 1], 'k--', label='Random Guess (AUC = 0.5)')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'Membership Inference ROC ({classifier_type})')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        if save_plot_path:
+            plt.savefig(save_plot_path)
+            logging.info(f"MIA ROC curve saved to {save_plot_path}")
+            plt.close()
+        else:
+            plt.close()
+    elif plot_roc:
+        logging.warning("MIA Plotting skipped: Only one class present in labels.")
 
     logging.info(f"[MIA Result ({classifier_type})] AUC = {auc:.4f}, Accuracy = {acc:.4f}")
     return auc, acc
@@ -233,8 +229,6 @@ class Test:
 
         self.num_classes = init_params_dict['num_classes']
         self.train_epochs = init_params_dict['train_epochs']
-        self.eval_batch_size = init_params_dict.get('eval_batch_size', 64)
-        self.mia_batch_size = init_params_dict.get('mia_batch_size', self.eval_batch_size) # MIA batch size
 
         self.info_batch_size = init_params_dict.get('info_batch_size', 15)
         self.info_use_converter = init_params_dict.get('info_use_converter', True)
@@ -248,14 +242,14 @@ class Test:
         self.benchmark_datasets = [subset for i, subset in enumerate(clients_subsets) if i != self.target_client]
         self.clients_indices = [subset.indices for subset in clients_subsets]
 
-        self.test_dataloader = DataLoader(self.test_dataset, batch_size=self.eval_batch_size, shuffle=False)
-        self.target_dataloader = DataLoader(self.clients_subsets[self.target_client], batch_size=self.eval_batch_size, shuffle=False)
-        self.mia_nonmember_loader = DataLoader(self.test_dataset, batch_size=self.mia_batch_size, shuffle=False)
-        self.mia_member_loader = DataLoader(self.clients_subsets[self.target_client], batch_size=self.mia_batch_size, shuffle=True)
+        self.test_dataloader = DataLoader(self.test_dataset, batch_size=32, shuffle=False)
+        self.target_dataloader = DataLoader(self.clients_subsets[self.target_client], batch_size=32, shuffle=False)
+        self.mia_nonmember_loader = DataLoader(self.test_dataset, batch_size=128, shuffle=False)
+        self.mia_member_loader = DataLoader(self.clients_subsets[self.target_client], batch_size=128, shuffle=True)
 
-        self.clients_dataloaders = [DataLoader(subset, batch_size=self.eval_batch_size, shuffle=False) for subset in self.clients_subsets]
+        self.clients_dataloaders = [DataLoader(subset, batch_size=32, shuffle=False) for subset in self.clients_subsets]
         classes_subsets = split_dataset_by_class_distribution(self.test_dataset, np.identity(self.num_classes))
-        self.class_dataloaders = [DataLoader(subset, batch_size=self.eval_batch_size, shuffle=False) for subset in classes_subsets]
+        self.class_dataloaders = [DataLoader(subset, batch_size=32, shuffle=False) for subset in classes_subsets]
 
         self.trained_model = None
         self.benchmark_model = None
@@ -360,67 +354,47 @@ class Test:
 
             # Attack 1: Original Trained Model
             logging.info("MIA on: Original Trained Model")
-            try:
-                # Ensure trained_model is in eval mode for MIA
-                self.trained_model.eval()
-                trained_mia_auc, trained_mia_acc = mia_attack(
-                    self.trained_model,
-                    self.mia_member_loader,    # Target client data = members
-                    self.mia_nonmember_loader, # Test data = non-members
-                    self.device,
-                    classifier_type=self.mia_classifier_type,
-                    plot_roc=False # Disable plotting during run
-                )
-                result['trained_mia_auc'] = trained_mia_auc
-                result['trained_mia_acc'] = trained_mia_acc
-            except Exception as e:
-                 logging.error(f"MIA failed for trained_model: {e}", exc_info=True)
-                 result['trained_mia_auc'] = -1.0 # Indicate error
-                 result['trained_mia_acc'] = -1.0
 
-            # **** START: ADDED MIA FOR RESET MODEL ****
+            self.trained_model.eval()
+            trained_mia_auc, trained_mia_acc = mia_attack(
+                self.trained_model,
+                self.mia_member_loader,    # Target client data = members
+                self.mia_nonmember_loader, # Test data = non-members
+                self.device,
+                classifier_type=self.mia_classifier_type,
+                plot_roc=False # Disable plotting during run
+            )
+            result['trained_mia_auc'] = trained_mia_auc
+            result['trained_mia_acc'] = trained_mia_acc
+
             # Attack 2: Reset Model (after reset, before retraining)
             logging.info("MIA on: Reset Model")
-            try:
-                # Ensure reset_model is in eval mode for MIA (it should be already, but explicit is good)
-                reset_model.eval()
-                reset_mia_auc, reset_mia_acc = mia_attack(
-                    reset_model,              # Use the reset model
-                    self.mia_member_loader,    # Target client data = members (test if still distinguishable)
-                    self.mia_nonmember_loader, # Test data = non-members
-                    self.device,
-                    classifier_type=self.mia_classifier_type,
-                    plot_roc=False # Disable plotting during run
-                )
-                result['reset_mia_auc'] = reset_mia_auc   # Use new keys
-                result['reset_mia_acc'] = reset_mia_acc   # Use new keys
-            except Exception as e:
-                 logging.error(f"MIA failed for reset_model: {e}", exc_info=True)
-                 result['reset_mia_auc'] = -1.0 # Indicate error
-                 result['reset_mia_acc'] = -1.0
-            # **** END: ADDED MIA FOR RESET MODEL ****
+            reset_model.eval()
+            reset_mia_auc, reset_mia_acc = mia_attack(
+                reset_model,              # Use the reset model
+                self.mia_member_loader,    # Target client data = members (test if still distinguishable)
+                self.mia_nonmember_loader, # Test data = non-members
+                self.device,
+                classifier_type=self.mia_classifier_type,
+                plot_roc=False # Disable plotting during run
+            )
+            result['reset_mia_auc'] = reset_mia_auc 
+            result['reset_mia_acc'] = reset_mia_acc 
 
 
             # Attack 3: Retrained Model (after unlearning and retraining)
             logging.info("MIA on: Retrained Model")
-            try:
-                # Ensure retrained_model is in eval mode (it should be already)
-                retrained_model.eval()
-                retrained_mia_auc, retrained_mia_acc = mia_attack(
-                    retrained_model,
-                    self.mia_member_loader,    # Target client data = members
-                    self.mia_nonmember_loader, # Test data = non-members
-                    self.device,
-                    classifier_type=self.mia_classifier_type,
-                    plot_roc=False # Disable plotting during run
-                )
-                result['retrained_mia_auc'] = retrained_mia_auc
-                result['retrained_mia_acc'] = retrained_mia_acc
-            except Exception as e:
-                 logging.error(f"MIA failed for retrained_model: {e}", exc_info=True)
-                 result['retrained_mia_auc'] = -1.0 # Indicate error
-                 result['retrained_mia_acc'] = -1.0
-
+            retrained_model.eval()
+            retrained_mia_auc, retrained_mia_acc = mia_attack(
+                retrained_model,
+                self.mia_member_loader,    # Target client data = members
+                self.mia_nonmember_loader, # Test data = non-members
+                self.device,
+                classifier_type=self.mia_classifier_type,
+                plot_roc=False # Disable plotting during run
+            )
+            result['retrained_mia_auc'] = retrained_mia_auc
+            result['retrained_mia_acc'] = retrained_mia_acc
         else:
             logging.info("--- Skipping Membership Inference Attack ---")
             result['trained_mia_auc'] = -1.0
@@ -507,9 +481,6 @@ def get_clients_subsets(dataset, init_params_dict):
         return split_dataset_by_class_distribution(dataset, class_distribution)
 
     elif distribution_type == 'uniform':
-        # Note: split_dataset_by_class_distribution with uniform might not be truly IID
-        # if dataset class distribution isn't perfectly balanced.
-        # random_split might be better for pure IID.
         class_distribution = np.ones((num_clients, num_classes)) / num_classes
         return split_dataset_by_class_distribution(dataset, class_distribution)
 
@@ -571,10 +542,7 @@ def get_loss_class(init_params_dict):
 
 def get_trainer_function(init_params_dict):
     trainer_name = init_params_dict['trainer_name']
-    lr = init_params_dict.get('lr', 0.01)
-    momentum = init_params_dict.get('momentum', 0.9)
-    train_batch_size = init_params_dict.get('train_batch_size', 32)
-    logging.info(f"Using trainer: {trainer_name} with lr={lr}, momentum={momentum}, batch_size={train_batch_size}")
+    logging.info(f"Using trainer: {trainer_name} with lr={0.01}, momentum={0.9}, batch_size={64}")
 
     if trainer_name == 'sgd':
 
@@ -583,8 +551,8 @@ def get_trainer_function(init_params_dict):
             model.train()
 
             loss_fn = loss_fn_instance
-            dataloader = DataLoader(concatenate_subsets(subsets), batch_size=train_batch_size, shuffle=True)
-            optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=momentum)
+            dataloader = DataLoader(concatenate_subsets(subsets), batch_size=32, shuffle=True)
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
             for epoch in tqdm.tqdm(range(epochs), desc=f"Training on {device}", unit="epoch", leave=False):
                 for inputs, targets in dataloader:
@@ -631,22 +599,18 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
     logging.info(f"Created test suite directory: {test_path}")
     init_params_dict_path = os.path.join(test_path, "init_params.pkl")
     test_params_dicts_path = os.path.join(test_path, "test_params.pkl")
-    try:
-        with open(init_params_dict_path, 'wb') as f: pickle.dump(init_params_dict, f)
-        with open(test_params_dicts_path, 'wb') as f: pickle.dump(test_params_dicts, f)
-        logging.info("Saved configuration dictionaries.")
-    except Exception as e: logging.error(f"Error saving configuration files: {e}")
+
+    with open(init_params_dict_path, 'wb') as f: pickle.dump(init_params_dict, f)
+    with open(test_params_dicts_path, 'wb') as f: pickle.dump(test_params_dicts, f)
+    logging.info("Saved configuration dictionaries.")
 
     num_tests = init_params_dict['num_tests']
-    try:
-        train_dataset, test_dataset = get_datasets(init_params_dict)
-        clients_subsets = get_clients_subsets(train_dataset, init_params_dict)
-        model_class = get_model_class(init_params_dict)
-        loss_class = get_loss_class(init_params_dict) 
-        trainer_function = get_trainer_function(init_params_dict)
-    except ValueError as e:
-        logging.error(f"Error during setup: {e}")
-        return
+
+    train_dataset, test_dataset = get_datasets(init_params_dict)
+    clients_subsets = get_clients_subsets(train_dataset, init_params_dict)
+    model_class = get_model_class(init_params_dict)
+    loss_class = get_loss_class(init_params_dict) 
+    trainer_function = get_trainer_function(init_params_dict)
 
     test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
 
@@ -667,8 +631,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
             # test_instance.clients_dataloaders = [DataLoader(...) for ...]
 
         test_iter_path = os.path.join(test_path, f"test_{i}")
-        try: os.makedirs(test_iter_path, exist_ok=True)
-        except OSError as e: logging.error(f"Could not create directory {test_iter_path}: {e}"); continue
+        os.makedirs(test_iter_path, exist_ok=True)
 
         clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
         trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
@@ -676,39 +639,35 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
         client_information_path = os.path.join(test_iter_path, "client_information.pkl")
         test_results_path = os.path.join(test_iter_path, "test_results.pkl")
 
-        try:
-            test_instance.init_new_test()
+        test_instance.init_new_test()
 
-            torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
-            torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
-            with open(clients_indices_path, 'wb') as f: pickle.dump(test_instance.clients_indices, f)
-            try:
-                client_info_to_save = test_instance.client_information
-                if isinstance(client_info_to_save, dict):
-                     client_info_to_save = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in client_info_to_save.items()}
-                elif isinstance(client_info_to_save, list): 
-                     client_info_to_save = [v.cpu() if isinstance(v, torch.Tensor) else v for v in client_info_to_save]
+        torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
+        torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
 
+        with open(clients_indices_path, 'wb') as f:
+            pickle.dump(test_instance.clients_indices, f)
 
-                with open(client_information_path, 'wb') as f: pickle.dump(client_info_to_save, f)
-            except Exception as pickle_err:
-                 logging.warning(f"Could not pickle client_information: {pickle_err}. Saving as None.")
-                 with open(client_information_path, 'wb') as f: pickle.dump(None, f)
+        client_info_to_save = test_instance.client_information
+        if isinstance(client_info_to_save, dict):
+             client_info_to_save = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in client_info_to_save.items()}
+        elif isinstance(client_info_to_save, list):
+             client_info_to_save = [v.cpu() if isinstance(v, torch.Tensor) else v for v in client_info_to_save]
 
-            logging.info(f"Saved artifacts for iteration {i+1} to {test_iter_path}")
+        with open(client_information_path, 'wb') as f:
+             pickle.dump(client_info_to_save, f)
 
-            iteration_results = []
-            for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Iter {i+1} - Unlearning tests", leave=False):
-                test_result = test_instance.run_test(test_params_dict)
-                iteration_results.append(test_result)
+        logging.info(f"Saved artifacts for iteration {i+1} to {test_iter_path}")
 
-            with open(test_results_path, 'wb') as f:
-                pickle.dump(iteration_results, f)
-            all_iterations_results.append(iteration_results)
-            logging.info(f"Saved results for iteration {i+1}.")
+        iteration_results = []
+        for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Iter {i+1} - Unlearning tests", leave=False):
+            test_result = test_instance.run_test(test_params_dict)
+            iteration_results.append(test_result)
 
-        except Exception as e:
-             logging.error(f"Error during test iteration {i+1}: {e}", exc_info=True)
+        with open(test_results_path, 'wb') as f:
+            pickle.dump(iteration_results, f)
+
+        all_iterations_results.append(iteration_results)
+        logging.info(f"Saved results for iteration {i+1}.")
 
         logging.info(f"--- Finished Test Iteration {i+1}/{num_tests} ---")
 
@@ -721,7 +680,6 @@ if __name__ == "__main__":
         'seed': 42,                       # Seed for reproducibility
         'run_mia': True,                  # Enable/disable MIA runs
         'mia_classifier_type': 'nn',      # Attack classifier ('logistic', 'svm', 'nn')
-        'mia_batch_size': 128,            # Batch size for MIA feature extraction
 
         'dataset_name': 'mnist',
         'num_clients': 5,
@@ -733,17 +691,13 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'lr': 0.01,                       # Learning rate
-        'momentum': 0.9,                  # Momentum
-        'train_batch_size': 64,           # Training batch size
-        'eval_batch_size': 128,           # Evaluation batch size
         'train_epochs': 5,                # Initial training epochs
 
         'info_batch_size': 10,            # Batch size for Fisher info calc
         'info_use_converter': False,      # Param for Fisher info calc
 
         'target_client': 0,               # Client to unlearn
-        'num_tests': 2                   # Number of independent repetitions
+        'num_tests': 10                   # Number of independent repetitions
     }
 
     test_params_dict = {
