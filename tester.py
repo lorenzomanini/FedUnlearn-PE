@@ -45,12 +45,6 @@ def set_batch_sizes(info_batch_size=INFO_BATCH_SIZE, mia_batch_size=MIA_BATCH_SI
     fisherunlearn.set_info_batch_size(info_batch_size)
     fisherunlearn.set_mia_batch_size(mia_batch_size)
 
-if __name__ == "__main__":
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    INFO_BATCH_SIZE = 15
-    MIA_BATCH_SIZE = 128
-    EVAL_BATCH_SIZE = 32
-    TRAIN_BATCH_SIZE = 32
 
 def compute_accuracy(model, dataset):
     dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
@@ -508,8 +502,6 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
 if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-    seed = random.randint(0, 10000)
 
     init_params_dict = {
         'test_name': 'test_mnist_mia_final', # Changed name slightly
