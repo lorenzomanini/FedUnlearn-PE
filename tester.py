@@ -99,7 +99,6 @@ class Test:
         self.info_use_converter = init_params_dict.get('info_use_converter', True)
 
 
-        self.clients_indices = [subset.indices for subset in clients_subsets]
         self.trained_model = None
         self.benchmark_model = None
         self.client_information = None
@@ -362,8 +361,9 @@ def get_trainer_function(init_params_dict):
         return simple_trainer
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
+
     
-def worker(arg):
+def run_tests_iter(arg):
     test_path = arg['test_path']
     iter = arg['iter']
 
@@ -376,8 +376,16 @@ def worker(arg):
     init_params_dict = arg['init_params_dict']
     test_params_dicts = arg['test_params_dicts']
 
+    device = arg.get('device', DEVICE)
+    set_device(device)
+
     test_iter_path = os.path.join(test_path, f"test_{iter}")
     os.makedirs(test_iter_path)
+
+    logger_file_handler = logging.FileHandler(os.path.join(test_iter_path, f"test_{iter}.log"))
+    logging.getLogger().addHandler(logger_file_handler)
+    logging.info(f"--- Starting Test Iteration {iter+1} ---")
+
     clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
     trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
     benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
@@ -389,24 +397,46 @@ def worker(arg):
     torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
     torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
 
-    with open(clients_indices_path, 'wb') as f:
-        pickle.dump(test_instance.clients_indices, f)
     with open(client_information_path, 'wb') as f:
         pickle.dump(test_instance.client_information, f)
 
     iteration_results = []
     for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
-        test_result = test_instance.run_test(test_params_dict)
-        iteration_results.append(test_result)
+        try:
+            test_result = test_instance.run_test(test_params_dict)
+            iteration_results.append(test_result)
+        except Exception as e:
+            logging.error(f"Error in test iteration {iter}: {e}")
+            iteration_results.append({'error': str(e)})
+        with open(test_results_path, 'wb') as f:
+            pickle.dump(iteration_results, f)
 
-    with open(test_results_path, 'wb') as f:
-        pickle.dump(iteration_results, f)
+    logging.info(f"--- Finished Test Iteration {iter+1} ---")
+    logging.getLogger().removeHandler(logger_file_handler)
+    logger_file_handler.close()
 
 
 def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1):
 
     test_name = init_params_dict['test_name']
     logging.info(f"Starting test suite: {test_name}")
+
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+        logging.info(f"Created base save directory: {save_path}")
+    test_path = os.path.join(save_path, test_name)
+    if os.path.exists(test_path):
+        orig_path = test_path
+        i = 1
+        test_path = f"{orig_path} ({i})"
+        while os.path.exists(test_path): i += 1; test_path = f"{orig_path} ({i})"
+        logging.warning(f"Test directory '{orig_path}' already exists.")
+    os.makedirs(test_path)
+    logging.info(f"Created test suite directory: {test_path}")
+
+    log_file_handler = logging.FileHandler(os.path.join(test_path, f"{test_name}.log"))
+    logging.getLogger().addHandler(log_file_handler)
+
     logging.info("Initial Configuration:")
     for key, value in init_params_dict.items():
         logging.info(f"  {key}: {value}")
@@ -451,40 +481,12 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
     loss_class = get_loss_class(init_params_dict) 
     trainer_function = get_trainer_function(init_params_dict)
 
-    if workers == 1:
-        for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
-            logging.info(f"--- Starting Test Iteration {i+1}/{num_tests} ---")
+    client_indices = [subset.indices for subset in clients_subsets]
+    clients_indices_path = os.path.join(test_path, "clients_indices.pkl")
+    with open(clients_indices_path, 'wb') as f:
+        pickle.dump(client_indices, f)
 
-            test_iter_path = os.path.join(test_path, f"test_{i}")
-            os.makedirs(test_iter_path)
-            clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
-            trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
-            benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
-            client_information_path = os.path.join(test_iter_path, "client_information.pkl")
-            test_results_path = os.path.join(test_iter_path, "test_results.pkl")
-
-            test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
-
-            torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
-            torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
-
-            with open(clients_indices_path, 'wb') as f:
-                pickle.dump(test_instance.clients_indices, f)
-            with open(client_information_path, 'wb') as f:
-                pickle.dump(test_instance.client_information, f)
-
-            iteration_results = []
-            for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
-                test_result = test_instance.run_test(test_params_dict)
-                iteration_results.append(test_result)
-
-            with open(test_results_path, 'wb') as f:
-                pickle.dump(iteration_results, f)
-    
-    else:
-        os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
-
-        args = [{
+    args = [{
                     'test_path': test_path,
                     'iter': i,
                     'train_dataset': train_dataset,
@@ -496,11 +498,24 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
                     'init_params_dict': init_params_dict,
                     'test_params_dicts': test_params_dicts
                 } for i in range(num_tests)]
+
+    if workers == 1:
+        for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
+            run_tests_iter(args[i])    
+    else:
+        os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
+        
+        args[0]['device'] = 'cuda'
+        args[1]['device'] = 'cpu'
         
         with Pool(workers) as pool:
-            pool.map(worker, args)
+            pool.map(run_tests_iter, args)
 
         os.environ['TQDM_DISABLE'] = '0'  # Re-enable tqdm in main process
+
+    logging.info(f"Test suite '{test_name}' completed.")
+    logging.getLogger().removeHandler(log_file_handler)
+    log_file_handler.close()
 
 
 
@@ -540,7 +555,7 @@ if __name__ == "__main__":
             'retrain_epochs': 1
         }
     
-    percentages = np.arange(5, 15, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
@@ -550,4 +565,4 @@ if __name__ == "__main__":
     save_path = './stat_tests'
 
     with logging_redirect_tqdm():
-        run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=2)
+        run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1)
