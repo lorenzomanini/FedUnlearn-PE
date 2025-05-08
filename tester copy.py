@@ -14,6 +14,8 @@ from torch import nn
 from torch.utils.data import DataLoader, Subset
 from torchvision.models import resnet18
 
+from torch.multiprocessing import Pool
+
 import numpy as np
 import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
@@ -294,10 +296,7 @@ def get_clients_subsets(dataset, init_params_dict):
     else:
         raise ValueError("Unsupported distribution type")
 
-def get_model_class(init_params_dict):
-    model_name = init_params_dict['model_name']
-    if model_name == 'simple_cnn':
-        class FLNet(nn.Sequential):
+class FLNet(nn.Sequential):
             def __init__(self):
                 super(FLNet, self).__init__(
                     nn.Conv2d(1, 32, 5, padding=2),
@@ -311,6 +310,10 @@ def get_model_class(init_params_dict):
                     nn.ReLU(),
                     nn.Linear(512, 10)
                     )
+                
+def get_model_class(init_params_dict):
+    model_name = init_params_dict['model_name']
+    if model_name == 'simple_cnn':
         return FLNet
     elif model_name == 'resnet18':
         num_classes = init_params_dict['num_classes']
@@ -332,11 +335,8 @@ def get_loss_class(init_params_dict):
         return nn.MSELoss
     else:
         raise ValueError("Unsupported loss name")
-
-def get_trainer_function(init_params_dict):
-    trainer_name = init_params_dict['trainer_name']
-    if trainer_name == 'sgd':
-        def trainer(model, loss_fn, subsets, epochs):
+    
+def simple_trainer(model, loss_fn, subsets, epochs):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model.train()
 
@@ -355,11 +355,55 @@ def get_trainer_function(init_params_dict):
 
             model.eval()
             return model.cpu()
-        return trainer
+
+def get_trainer_function(init_params_dict):
+    trainer_name = init_params_dict['trainer_name']
+    if trainer_name == 'sgd':
+        return simple_trainer
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
+    
+def worker(arg):
+    test_path = arg['test_path']
+    iter = arg['iter']
 
-def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
+    train_dataset = arg['train_dataset']
+    test_dataset = arg['test_dataset']
+    clients_subsets = arg['clients_subsets']
+    model_class = arg['model_class']
+    loss_class = arg['loss_class']
+    trainer_function = arg['trainer_function']
+    init_params_dict = arg['init_params_dict']
+    test_params_dicts = arg['test_params_dicts']
+
+    test_iter_path = os.path.join(test_path, f"test_{iter}")
+    os.makedirs(test_iter_path)
+    clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
+    trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
+    benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
+    client_information_path = os.path.join(test_iter_path, "client_information.pkl")
+    test_results_path = os.path.join(test_iter_path, "test_results.pkl")
+
+    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
+
+    torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
+    torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
+
+    with open(clients_indices_path, 'wb') as f:
+        pickle.dump(test_instance.clients_indices, f)
+    with open(client_information_path, 'wb') as f:
+        pickle.dump(test_instance.client_information, f)
+
+    iteration_results = []
+    for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
+        test_result = test_instance.run_test(test_params_dict)
+        iteration_results.append(test_result)
+
+    with open(test_results_path, 'wb') as f:
+        pickle.dump(iteration_results, f)
+
+
+def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1):
 
     test_name = init_params_dict['test_name']
     logging.info(f"Starting test suite: {test_name}")
@@ -407,34 +451,57 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
     loss_class = get_loss_class(init_params_dict) 
     trainer_function = get_trainer_function(init_params_dict)
 
-    for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
-        logging.info(f"--- Starting Test Iteration {i+1}/{num_tests} ---")
+    if workers == 1:
+        for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
+            logging.info(f"--- Starting Test Iteration {i+1}/{num_tests} ---")
 
-        test_iter_path = os.path.join(test_path, f"test_{i}")
-        os.makedirs(test_iter_path)
-        clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
-        trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
-        benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
-        client_information_path = os.path.join(test_iter_path, "client_information.pkl")
-        test_results_path = os.path.join(test_iter_path, "test_results.pkl")
+            test_iter_path = os.path.join(test_path, f"test_{i}")
+            os.makedirs(test_iter_path)
+            clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
+            trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
+            benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
+            client_information_path = os.path.join(test_iter_path, "client_information.pkl")
+            test_results_path = os.path.join(test_iter_path, "test_results.pkl")
 
-        test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
+            test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
 
-        torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
-        torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
+            torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
+            torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
 
-        with open(clients_indices_path, 'wb') as f:
-            pickle.dump(test_instance.clients_indices, f)
-        with open(client_information_path, 'wb') as f:
-            pickle.dump(test_instance.client_information, f)
+            with open(clients_indices_path, 'wb') as f:
+                pickle.dump(test_instance.clients_indices, f)
+            with open(client_information_path, 'wb') as f:
+                pickle.dump(test_instance.client_information, f)
 
-        iteration_results = []
-        for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
-            test_result = test_instance.run_test(test_params_dict)
-            iteration_results.append(test_result)
+            iteration_results = []
+            for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
+                test_result = test_instance.run_test(test_params_dict)
+                iteration_results.append(test_result)
 
-        with open(test_results_path, 'wb') as f:
-            pickle.dump(iteration_results, f)
+            with open(test_results_path, 'wb') as f:
+                pickle.dump(iteration_results, f)
+    
+    else:
+        os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
+
+        args = [{
+                    'test_path': test_path,
+                    'iter': i,
+                    'train_dataset': train_dataset,
+                    'test_dataset': test_dataset,
+                    'clients_subsets': clients_subsets,
+                    'model_class': model_class,
+                    'loss_class': loss_class,
+                    'trainer_function': trainer_function,
+                    'init_params_dict': init_params_dict,
+                    'test_params_dicts': test_params_dicts
+                } for i in range(num_tests)]
+        
+        with Pool(workers) as pool:
+            pool.map(worker, args)
+
+        os.environ['TQDM_DISABLE'] = '0'  # Re-enable tqdm in main process
+
 
 
 
@@ -473,12 +540,14 @@ if __name__ == "__main__":
             'retrain_epochs': 1
         }
     
-    percentages = np.arange(5, 45, 5)
+    percentages = np.arange(5, 15, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
 
+    
+
     save_path = './stat_tests'
 
     with logging_redirect_tqdm():
-        run_repeated_tests(init_params_dict, test_params_dicts, save_path)
+        run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=2)
