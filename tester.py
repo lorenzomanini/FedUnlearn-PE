@@ -199,19 +199,20 @@ class Test:
 
         if 'mia' in test_params_dict['tests']:
             logging.info("Running MIA...")
-            classifier_type = test_params_dict['mia_classifier_type']
+            for classifier_type in test_params_dict['mia_classifier_types']:
+                logging.info(f"Classifier type: {classifier_type}")
 
-            try:
-                result['trained_mia'] = self.trained_mia
-                result['benchmark_mia'] = self.benchmark_mia
-            except AttributeError:
-                self.trained_mia = mia_attack(self.trained_model, self.target_dataset, self.test_dataset, classifier_type)
-                self.benchmark_mia = mia_attack(self.benchmark_model, self.target_dataset, self.test_dataset, classifier_type)
-                result['trained_mia'] = self.trained_mia
-                result['benchmark_mia'] = self.benchmark_mia
+                try:
+                    result[f'trained_mia_{classifier_type}'] = self.trained_mia
+                    result[f'benchmark_mia_{classifier_type}'] = self.benchmark_mia
+                except AttributeError:
+                    self.trained_mia = mia_attack(self.trained_model, self.target_dataset, self.test_dataset, classifier_type)
+                    self.benchmark_mia = mia_attack(self.benchmark_model, self.target_dataset, self.test_dataset, classifier_type)
+                    result[f'trained_mia_{classifier_type}'] = self.trained_mia
+                    result[f'benchmark_mia_{classifier_type}'] = self.benchmark_mia
 
-            result['reset_mia'] = mia_attack(reset_model, self.target_dataset, self.test_dataset, classifier_type)
-            result['retrained_mia'] = mia_attack(retrained_model, self.target_dataset, self.test_dataset, classifier_type)
+                result[f'reset_mia_{classifier_type}'] = mia_attack(reset_model, self.target_dataset, self.test_dataset, classifier_type)
+                result[f'retrained_mia_{classifier_type}'] = mia_attack(retrained_model, self.target_dataset, self.test_dataset, classifier_type)
 
         return result
     
@@ -307,8 +308,10 @@ class FLNet(nn.Sequential):
 def get_model_class(init_params_dict):
     model_name = init_params_dict['model_name']
     if model_name == 'simple_cnn':
+        init_params_dict['info_use_converter'] = False
         return FLNet
     elif model_name == 'resnet18':
+        init_params_dict['info_use_converter'] = True
         num_classes = init_params_dict['num_classes']
         # Ensure ResNet18 input layer matches dataset (e.g., MNIST needs adjustment)
         def create_resnet():
@@ -370,15 +373,17 @@ def run_tests_iter(arg):
     init_params_dict = arg['init_params_dict']
     test_params_dicts = arg['test_params_dicts']
 
-    device = arg.get('device', DEVICE)
-    set_device(device)
-
     test_iter_path = os.path.join(test_path, f"test_{iter}")
     os.makedirs(test_iter_path)
 
     logger_file_handler = logging.FileHandler(os.path.join(test_iter_path, f"test_{iter}.log"))
     logging.getLogger().addHandler(logger_file_handler)
     logging.info(f"--- Starting Test Iteration {iter+1} ---")
+
+    device = arg.get('device', DEVICE)
+    set_device(device)
+
+    logging.info(f"Using device: {device}")
 
     trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
     benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
@@ -413,6 +418,8 @@ def run_tests_iter(arg):
 
 
 def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1):
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     test_name = init_params_dict['test_name']
     logging.info(f"Starting test suite: {test_name}")
@@ -471,10 +478,12 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
                 } for i in range(num_tests)]
     
     tests_errors = []
+
     if workers == 1:
-        for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
-            errors=run_tests_iter(args[i])    
-            tests_errors.append(errors)
+        with logging_redirect_tqdm():
+            for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
+                errors=run_tests_iter(args[i])    
+                tests_errors.append(errors)
     else:
         os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
         
@@ -500,11 +509,8 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
 
 
 if __name__ == "__main__":
-
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
     init_params_dict = {
-        'test_name': 'test_mnist_mia_final', # Changed name slightly
+        'test_name': 'test_mnist_true', # Changed name slightly
 
         'dataset_name': 'mnist',
         'num_clients': 5,
@@ -515,9 +521,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 1,                # Initial training epochs
-
-        'info_use_converter': False,      # Param for Fisher info calc
+        'train_epochs': 6,                # Initial training epochs
 
         'target_client': 0,               # Client to unlearn
         'num_tests': 2                   # Number of independent repetitions
@@ -527,7 +531,7 @@ if __name__ == "__main__":
             'subtest': 0,
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia'],
-            'mia_classifier_type': 'nn',
+            'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
     
@@ -540,5 +544,4 @@ if __name__ == "__main__":
 
     save_path = './stat_tests'
 
-    with logging_redirect_tqdm():
-        run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1)
