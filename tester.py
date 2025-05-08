@@ -386,7 +386,6 @@ def run_tests_iter(arg):
     logging.getLogger().addHandler(logger_file_handler)
     logging.info(f"--- Starting Test Iteration {iter+1} ---")
 
-    clients_indices_path = os.path.join(test_iter_path, "clients_indices.pkl")
     trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
     benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
     client_information_path = os.path.join(test_iter_path, "client_information.pkl")
@@ -401,19 +400,22 @@ def run_tests_iter(arg):
         pickle.dump(test_instance.client_information, f)
 
     iteration_results = []
-    for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
+    errors = []
+    for i, test_params_dict in enumerate(tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
         try:
             test_result = test_instance.run_test(test_params_dict)
             iteration_results.append(test_result)
         except Exception as e:
             logging.error(f"Error in test iteration {iter}: {e}")
             iteration_results.append({'error': str(e)})
+            errors.append(i)
         with open(test_results_path, 'wb') as f:
             pickle.dump(iteration_results, f)
 
     logging.info(f"--- Finished Test Iteration {iter+1} ---")
     logging.getLogger().removeHandler(logger_file_handler)
     logger_file_handler.close()
+    return errors
 
 
 def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1):
@@ -441,31 +443,6 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
     for key, value in init_params_dict.items():
         logging.info(f"  {key}: {value}")
     logging.info("-" * 30)
-    
-    seed_value = init_params_dict.get('seed', None)
-    if seed_value is not None:
-        random.seed(seed_value)
-        np.random.seed(seed_value)
-        torch.manual_seed(seed_value)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed_value)
-            torch.cuda.manual_seed_all(seed_value)
-        logging.info(f"Global seed set to {seed_value}")
-    else:
-        logging.warning("No seed specified in init_params_dict. Results may not be reproducible.")
-
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-        logging.info(f"Created base save directory: {save_path}")
-    test_path = os.path.join(save_path, test_name)
-    if os.path.exists(test_path):
-        orig_path = test_path
-        i = 1
-        test_path = f"{orig_path} ({i})"
-        while os.path.exists(test_path): i += 1; test_path = f"{orig_path} ({i})"
-        logging.warning(f"Test directory '{orig_path}' already exists.")
-    os.makedirs(test_path)
-    logging.info(f"Created test suite directory: {test_path}")
 
     init_params_dict_path = os.path.join(test_path, "init_params.pkl")
     test_params_dicts_path = os.path.join(test_path, "test_params.pkl")
@@ -498,22 +475,30 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
                     'init_params_dict': init_params_dict,
                     'test_params_dicts': test_params_dicts
                 } for i in range(num_tests)]
-
+    
+    tests_errors = []
     if workers == 1:
         for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
-            run_tests_iter(args[i])    
+            errors=run_tests_iter(args[i])    
+            tests_errors.append(errors)
     else:
         os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
         
-        args[0]['device'] = 'cuda'
-        args[1]['device'] = 'cpu'
+        # args[0]['device'] = 'cuda'
+        # args[1]['device'] = 'cpu'
         
         with Pool(workers) as pool:
-            pool.map(run_tests_iter, args)
+            errors=pool.map(run_tests_iter, args)
+            tests_errors.append(errors)
 
         os.environ['TQDM_DISABLE'] = '0'  # Re-enable tqdm in main process
+    
+    logging.info(f"Test suite '{test_name}' completed with {len(tests_errors)} iterations.")
+    for i, errors in enumerate(tests_errors):
+        if len(errors) > 0:
+            logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
 
-    logging.info(f"Test suite '{test_name}' completed.")
+
     logging.getLogger().removeHandler(log_file_handler)
     log_file_handler.close()
 
@@ -528,7 +513,6 @@ if __name__ == "__main__":
 
     init_params_dict = {
         'test_name': 'test_mnist_mia_final', # Changed name slightly
-        'seed': seed,                       # Seed for reproducibility
 
         'dataset_name': 'mnist',
         'num_clients': 5,
