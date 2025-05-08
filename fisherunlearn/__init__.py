@@ -18,6 +18,18 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_auc_score, accuracy_score, roc_curve
 from sklearn.model_selection import train_test_split
 
+if 'DEVICE' not in globals():
+    global DEVICE
+    DEVICE = 'cpu'
+
+if 'MIA_BATCH_SIZE' not in globals():
+    global MIA_BATCH_SIZE
+    MIA_BATCH_SIZE = 1
+
+if 'INFO_BATCH_SIZE' not in globals():
+    global INFO_BATCH_SIZE
+    INFO_BATCH_SIZE = 1
+
 
 def compute_diag_hessian(model, criterion, inputs, targets, device='cpu'):
     inputs = inputs.to(device)
@@ -114,13 +126,12 @@ def compute_informations(model, criterion, dataloader_list, method='diag_ggn', u
     return clients_informations
 
 
-if 'INFO_BATCH_SIZE' not in globals():
-    INFO_BATCH_SIZE = 1
-
 def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', use_converter=True):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = copy.deepcopy(model).to(device).eval()
-    criterion = copy.deepcopy(criterion).to(device)
+
+    print(DEVICE)
+
+    model = copy.deepcopy(model).to(DEVICE).eval()
+    criterion = copy.deepcopy(criterion).to(DEVICE)
     
     model = extend(model, use_converter=use_converter)
     criterion = extend(criterion)
@@ -138,9 +149,9 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
         for inputs, targets in loader:
             # Compute the diag Hessian for this batch
             if method == 'diag_hessian':
-                diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
+                diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=DEVICE)
             elif method == 'diag_ggn':
-                diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=device)
+                diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=DEVICE)
             else:
                 raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
 
@@ -449,16 +460,11 @@ class UnlearnNet(nn.Module):
         return detached_params
 
 
-if 'MIA_BATCH_SIZE' not in globals():
-    MIA_BATCH_SIZE = 1
-
 def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logistic', plot=False):
 
-    print(f"MIA_BATCH_SIZE: {MIA_BATCH_SIZE}")
     member_loader = DataLoader(member_dataset, MIA_BATCH_SIZE, shuffle=False)
     nonmember_loader = DataLoader(nonmember_dataset, MIA_BATCH_SIZE, shuffle=False)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model.eval()
     
     if classifier_type not in ['logistic', 'svm', 'linear', 'nn']:
@@ -466,12 +472,12 @@ def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logist
     
     def get_features(model, dataloader):
         model.eval()
-        model.to(device)
+        model.to(DEVICE)
         confs, losses, entropies = [], [], []
         ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
         with torch.no_grad():
             for x, y in dataloader:
-                x, y = x.to(device), y.to(device)
+                x, y = x.to(DEVICE), y.to(DEVICE)
                 logits = model(x)
                 probs = F.softmax(logits, dim=1)
                 conf, _ = probs.max(dim=1)
@@ -517,12 +523,12 @@ def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logist
                 return x
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        model_nn = SimpleNN().to(device)
+        model_nn = SimpleNN().to(DEVICE)
         optimizer = torch.optim.Adam(model_nn.parameters(), lr=0.01)
         criterion = nn.BCELoss()
 
-        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
-        y_train_tensor = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32).to(device)
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(DEVICE)
+        y_train_tensor = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32).to(DEVICE)
 
         model_nn.train()
         for epoch in range(200):
@@ -534,8 +540,8 @@ def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logist
 
         # Evaluate
         model_nn.eval()
-        X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
-        y_test_tensor = torch.tensor(y_test.reshape(-1, 1), dtype=torch.float32).to(device)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(DEVICE)
+        y_test_tensor = torch.tensor(y_test.reshape(-1, 1), dtype=torch.float32).to(DEVICE)
         with torch.no_grad():
             y_score = model_nn(X_test_tensor).cpu().numpy().flatten()
             y_pred = (y_score > 0.5).astype(int)
@@ -557,4 +563,4 @@ def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logist
         plt.show()
 
         print(f"[MIA: {classifier_type}] AUC = {auc:.4f}, Accuracy = {acc:.4f}")
-    return auc, acc
+    return {'roc_auc': auc, 'accuracy': acc}

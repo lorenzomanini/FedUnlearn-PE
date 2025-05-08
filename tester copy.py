@@ -14,18 +14,20 @@ from torchvision.models import resnet18
 
 import numpy as np
 import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
-INFO_BATCH_SIZE = 15
-MIA_BATCH_SIZE = 128
-EVAL_BATCH_SIZE = 32
-TRAIN_BATCH_SIZE = 32
-
+if __name__ == "__main__":
+    global DEVICE, INFO_BATCH_SIZE, MIA_BATCH_SIZE, EVAL_BATCH_SIZE, TRAIN_BATCH_SIZE
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    INFO_BATCH_SIZE = 15
+    MIA_BATCH_SIZE = 128
+    EVAL_BATCH_SIZE = 32
+    TRAIN_BATCH_SIZE = 32
 
 def compute_accuracy(model, dataset):
     dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model.to(device)
+    model.to(DEVICE)
     model.eval()
     correct = 0
     total = 0
@@ -34,7 +36,7 @@ def compute_accuracy(model, dataset):
     
     with torch.no_grad():
         for images, labels in dataloader:
-            images, labels = images.to(device), labels.to(device)
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
@@ -50,46 +52,39 @@ def compute_accuracy(model, dataset):
 class Test:
     def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict={}):
 
+        # Initialize parameters
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
-        self.clients_subsets = clients_subsets
+        self.clients_datasets = clients_subsets
         self.target_client = init_params_dict.get('target_client', 0)
 
-        self.target_dataset = self.clients_subsets[self.target_client]
-        self.benchmark_datasets = [subset for i, subset in enumerate(self.clients_subsets) if i != self.target_client]
-        self.classes_subsets = split_dataset_by_class_distribution(self.test_dataset, np.identity(self.num_classes))
+        self.target_dataset = self.clients_datasets[self.target_client]
+        self.benchmark_datasets = [subset for i, subset in enumerate(self.clients_datasets) if i != self.target_client]
+
+        self.classes_datasets = split_dataset_by_class_distribution(self.test_dataset, np.identity(init_params_dict['num_classes']))
 
         self.model_class = model_class
         self.loss_class = loss_class
         self.trainer_function = trainer_function
 
-        self.num_classes = init_params_dict['num_classes']
         self.train_epochs = init_params_dict['train_epochs']
-
-        self.info_batch_size = init_params_dict.get('info_batch_size', 15)
         self.info_use_converter = init_params_dict.get('info_use_converter', True)
 
-        self.run_mia = init_params_dict.get('run_mia', True)
-        self.mia_classifier_type = init_params_dict.get('mia_classifier_type', 'logistic')
 
-        
         self.clients_indices = [subset.indices for subset in clients_subsets]
-
         self.trained_model = None
         self.benchmark_model = None
         self.client_information = None
 
-        self.cache_initialized = False
 
-    def init_new_test(self):
-        logging.info("Initializing new test: Training models...") 
-        # Train models
-        self.trained_model = self.trainer_function(self.model_class(), self.loss_class(), self.clients_subsets, self.train_epochs)
+        logging.info("Training model...") 
+        self.trained_model = self.trainer_function(self.model_class(), self.loss_class(), self.clients_datasets, self.train_epochs)
 
+        logging.info("Training benchmark model...") 
         self.benchmark_model = self.trainer_function(self.model_class(), self.loss_class(), self.benchmark_datasets, self.train_epochs)
 
-        # Compute information
-        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, batch_size=self.info_batch_size, use_converter=self.info_use_converter)
+        logging.info("Computing information...") 
+        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter)
 
 
     def run_test(self, test_params_dict):
@@ -124,83 +119,83 @@ class Test:
 
         result['total_individual_reset_params'] = total_individual_reset_params
 
-        logging.info("Computing initial accuracies for trained model...")
-        self.trained_test_accuracy = compute_accuracy(self.trained_model, self.test_dataset)
-        self.trained_target_accuracy = compute_accuracy(self.trained_model, target_dataloader)
-        self.trained_clients_accuracies = compute_dataloaders_accuracy(self.trained_model, self.clients_dataloaders)
-        self.trained_class_accuracies = compute_dataloaders_accuracy(self.trained_model, self.class_dataloaders)
-        logging.info(f"Trained Model - Test Acc: {self.trained_test_accuracy:.4f}, Target Acc: {self.trained_target_accuracy:.4f}")
+        if 'test_accuracy' in test_params_dict['tests']:
+            logging.info("Computing test accuracies...")
 
-        logging.info("Computing initial accuracies for benchmark model...")
-        self.benchmark_test_accuracy = compute_accuracy(self.benchmark_model, test_dataloader)
-        self.benchmark_target_accuracy = compute_accuracy(self.benchmark_model, target_dataloader)
-        self.benchmark_clients_accuracies = compute_dataloaders_accuracy(self.benchmark_model, self.clients_dataloaders)
-        self.benchmark_class_accuracies = compute_dataloaders_accuracy(self.benchmark_model, self.class_dataloaders)
-        logging.info(f"Benchmark Model - Test Acc: {self.benchmark_test_accuracy:.4f}, Target Acc (on unseen data): {self.benchmark_target_accuracy:.4f}")
+            try:
+                result['trained_test_accuracy'] = self.trained_test_accuracy
+                result['benchmark_test_accuracy'] = self.benchmark_test_accuracy
+            except AttributeError:
+                self.trained_test_accuracy = compute_accuracy(self.trained_model, self.test_dataset)
+                self.benchmark_test_accuracy = compute_accuracy(self.benchmark_model, self.test_dataset)
+                result['trained_test_accuracy'] = self.trained_test_accuracy
+                result['benchmark_test_accuracy'] = self.benchmark_test_accuracy
+            
+            result['reset_test_accuracy'] = compute_accuracy(reset_model, self.test_dataset)
+            result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.test_dataset)
+        
+        if 'target_accuracy' in test_params_dict['tests']:
+            logging.info("Computing target accuracies...")
+            try:
+                result['trained_target_accuracy'] = self.trained_target_accuracy
+                result['benchmark_target_accuracy'] = self.benchmark_target_accuracy
+            except AttributeError:
+                self.trained_target_accuracy = compute_accuracy(self.trained_model, self.target_dataset)
+                self.benchmark_target_accuracy = compute_accuracy(self.benchmark_model, self.target_dataset)
+                result['trained_target_accuracy'] = self.trained_target_accuracy
+                result['benchmark_target_accuracy'] = self.benchmark_target_accuracy
 
+            result['reset_target_accuracy'] = compute_accuracy(reset_model, self.target_dataset)
+            result['retrained_target_accuracy'] = compute_accuracy(retrained_model, self.target_dataset)
+        
+        if 'clients_accuracies' in test_params_dict['tests']:
+            logging.info("Computing clients accuracies...")
+            try:
+                result['trained_clients_accuracies'] = self.trained_clients_accuracies
+                result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies
+            except AttributeError:
+                self.trained_clients_accuracies = [compute_accuracy(self.trained_model, subset) for subset in self.clients_datasets]
+                self.benchmark_clients_accuracies = [compute_accuracy(self.benchmark_model, subset) for subset in self.clients_datasets]
+                result['trained_clients_accuracies'] = self.trained_clients_accuracies
+                result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies
+            
+            result['reset_clients_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.clients_datasets]
+            result['retrained_clients_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.clients_datasets]
 
-        result['trained_test_accuracy'] = self.trained_test_accuracy
-        result['trained_target_accuracy'] = self.trained_target_accuracy
-        result['trained_clients_accuracies'] = self.trained_clients_accuracies
-        result['trained_class_accuracies'] = self.trained_class_accuracies
-        result['benchmark_test_accuracy'] = self.benchmark_test_accuracy
-        result['benchmark_target_accuracy'] = self.benchmark_target_accuracy
-        result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies
-        result['benchmark_class_accuracies'] = self.benchmark_class_accuracies
+        if 'class_accuracies' in test_params_dict['tests']:
+            logging.info("Computing class accuracies...")
+            try:
+                result['trained_class_accuracies'] = self.trained_class_accuracies
+                result['benchmark_class_accuracies'] = self.benchmark_class_accuracies
+            except AttributeError:
+                self.trained_class_accuracies = [compute_accuracy(self.trained_model, subset) for subset in self.classes_datasets]
+                self.benchmark_class_accuracies = [compute_accuracy(self.benchmark_model, subset) for subset in self.classes_datasets]
+                result['trained_class_accuracies'] = self.trained_class_accuracies
+                result['benchmark_class_accuracies'] = self.benchmark_class_accuracies
 
-        logging.info("Computing accuracies for reset model...")
-        result['reset_test_accuracy'] = compute_accuracy(reset_model, test_dataloader)
-        result['reset_target_accuracy'] = compute_accuracy(reset_model, target_dataloader)
-        result['reset_clients_accuracies'] = compute_dataloaders_accuracy(reset_model, self.clients_dataloaders)
-        result['reset_class_accuracies'] = compute_dataloaders_accuracy(reset_model, self.class_dataloaders)
+            result['reset_class_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.classes_datasets]
+            result['retrained_class_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.classes_datasets]
 
-        logging.info("Computing accuracies for retrained model...")
-        result['retrained_test_accuracy'] = compute_accuracy(retrained_model, test_dataloader)
-        result['retrained_target_accuracy'] = compute_accuracy(retrained_model, target_dataloader)
-        result['retrained_clients_accuracies'] = compute_dataloaders_accuracy(retrained_model, self.clients_dataloaders)
-        result['retrained_class_accuracies'] = compute_dataloaders_accuracy(retrained_model, self.class_dataloaders)
+        if 'mia' in test_params_dict['tests']:
+            logging.info("Running MIA...")
+            classifier_type = test_params_dict['mia_classifier_type']
 
-        if self.run_mia:
-            logging.info(f"--- Running Membership Inference Attack ({self.mia_classifier_type}) ---")
+            try:
+                result['trained_mia'] = self.trained_mia
+                result['benchmark_mia'] = self.benchmark_mia
+            except AttributeError:
+                self.trained_mia = mia_attack(self.trained_model, self.target_dataset, self.test_dataset, classifier_type)
+                self.benchmark_mia = mia_attack(self.benchmark_model, self.target_dataset, self.test_dataset, classifier_type)
+                result['trained_mia'] = self.trained_mia
+                result['benchmark_mia'] = self.benchmark_mia
 
-            # Attack 1: Original Trained Model
-            logging.info("MIA on: Original Trained Model")
-
-            trained_mia_auc, trained_mia_acc = mia_attack(
-                self.trained_model,
-                self.mia_member_loader,    # Target client data = members
-                self.mia_nonmember_loader, # Test data = non-members
-                classifier_type=self.mia_classifier_type
-            )
-            result['trained_mia_auc'] = trained_mia_auc
-            result['trained_mia_acc'] = trained_mia_acc
-
-            # Attack 2: Reset Model (after reset, before retraining)
-            logging.info("MIA on: Reset Model")
-            reset_mia_auc, reset_mia_acc = mia_attack(
-                reset_model,              # Use the reset model
-                self.mia_member_loader,    # Target client data = members (test if still distinguishable)
-                self.mia_nonmember_loader, # Test data = non-members
-                classifier_type=self.mia_classifier_type
-            )
-            result['reset_mia_auc'] = reset_mia_auc 
-            result['reset_mia_acc'] = reset_mia_acc 
-
-
-            # Attack 3: Retrained Model (after unlearning and retraining)
-            logging.info("MIA on: Retrained Model")
-            retrained_mia_auc, retrained_mia_acc = mia_attack(
-                retrained_model,
-                self.mia_member_loader,    # Target client data = members
-                self.mia_nonmember_loader, # Test data = non-members
-                classifier_type=self.mia_classifier_type
-            )
-            result['retrained_mia_auc'] = retrained_mia_auc
-            result['retrained_mia_acc'] = retrained_mia_acc
+            result['reset_mia'] = mia_attack(reset_model, self.target_dataset, self.test_dataset, classifier_type)
+            result['retrained_mia'] = mia_attack(retrained_model, self.target_dataset, self.test_dataset, classifier_type)
 
         return result
     
 def get_datasets(init_params_dict):
+
     dataset_name = init_params_dict['dataset_name']
     model_name = init_params_dict['model_name']
     if dataset_name == 'mnist':
@@ -368,9 +363,10 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
         i = 1
         test_path = f"{orig_path} ({i})"
         while os.path.exists(test_path): i += 1; test_path = f"{orig_path} ({i})"
-        logging.warning(f"Test directory '{orig_path}' already exists. Saving to '{test_path}'.")
+        logging.warning(f"Test directory '{orig_path}' already exists.")
     os.makedirs(test_path)
     logging.info(f"Created test suite directory: {test_path}")
+
     init_params_dict_path = os.path.join(test_path, "init_params.pkl")
     test_params_dicts_path = os.path.join(test_path, "test_params.pkl")
 
@@ -385,8 +381,6 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
     loss_class = get_loss_class(init_params_dict) 
     trainer_function = get_trainer_function(init_params_dict)
 
-    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
-
     for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
         logging.info(f"--- Starting Test Iteration {i+1}/{num_tests} ---")
 
@@ -398,7 +392,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
         client_information_path = os.path.join(test_iter_path, "client_information.pkl")
         test_results_path = os.path.join(test_iter_path, "test_results.pkl")
 
-        test_instance.init_new_test()
+        test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
 
         torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
         torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
@@ -422,34 +416,34 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+    seed = random.randint(0, 10000)
 
     init_params_dict = {
         'test_name': 'test_mnist_mia_final', # Changed name slightly
-        'seed': 42,                       # Seed for reproducibility
-        'run_mia': True,                  # Enable/disable MIA runs
-        'mia_classifier_type': 'nn',      # Attack classifier ('logistic', 'svm', 'nn')
+        'seed': seed,                       # Seed for reproducibility
 
         'dataset_name': 'mnist',
         'num_clients': 5,
-        'num_classes': 10,
+        'num_classes': 10,                # Number of classes in the dataset
         'distribution_type': 'random',     # Distribution type
 
         'model_name': 'simple_cnn',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 5,                # Initial training epochs
+        'train_epochs': 1,                # Initial training epochs
 
-        'info_batch_size': 10,            # Batch size for Fisher info calc
         'info_use_converter': False,      # Param for Fisher info calc
 
         'target_client': 0,               # Client to unlearn
-        'num_tests': 10                   # Number of independent repetitions
+        'num_tests': 2                   # Number of independent repetitions
     }
 
     test_params_dict = {
             'subtest': 0,
             'unlearning_method': 'information',
+            'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia'],
+            'mia_classifier_type': 'nn',
             'retrain_epochs': 1
         }
     
@@ -458,9 +452,7 @@ if __name__ == "__main__":
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
 
-
-    logging.info(f"Generated {len(test_params_dicts)} unlearning test configurations.")
-
     save_path = './stat_tests'
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path)
+    with logging_redirect_tqdm():
+        run_repeated_tests(init_params_dict, test_params_dicts, save_path)
