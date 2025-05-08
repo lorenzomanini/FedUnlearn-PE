@@ -18,17 +18,21 @@ from sklearn.svm import SVC
 from sklearn.metrics import roc_auc_score, accuracy_score, roc_curve
 from sklearn.model_selection import train_test_split
 
-if 'DEVICE' not in globals():
+DEVICE = 'cpu'
+INFO_BATCH_SIZE = 1
+MIA_BATCH_SIZE = 1
+
+def set_device(device):
     global DEVICE
-    DEVICE = 'cpu'
+    DEVICE = device
 
-if 'MIA_BATCH_SIZE' not in globals():
-    global MIA_BATCH_SIZE
-    MIA_BATCH_SIZE = 1
-
-if 'INFO_BATCH_SIZE' not in globals():
+def set_info_batch_size(batch_size):
     global INFO_BATCH_SIZE
-    INFO_BATCH_SIZE = 1
+    INFO_BATCH_SIZE = batch_size
+
+def set_mia_batch_size(batch_size):
+    global MIA_BATCH_SIZE
+    MIA_BATCH_SIZE = batch_size
 
 
 def compute_diag_hessian(model, criterion, inputs, targets, device='cpu'):
@@ -128,7 +132,8 @@ def compute_informations(model, criterion, dataloader_list, method='diag_ggn', u
 
 def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', use_converter=True):
 
-    print(DEVICE)
+    global DEVICE
+    global INFO_BATCH_SIZE
 
     model = copy.deepcopy(model).to(DEVICE).eval()
     criterion = copy.deepcopy(criterion).to(DEVICE)
@@ -461,6 +466,9 @@ class UnlearnNet(nn.Module):
 
 
 def mia_attack(model, member_dataset, nonmember_dataset, classifier_type='logistic', plot=False):
+
+    global DEVICE
+    global MIA_BATCH_SIZE
 
     member_loader = DataLoader(member_dataset, MIA_BATCH_SIZE, shuffle=False)
     nonmember_loader = DataLoader(nonmember_dataset, MIA_BATCH_SIZE, shuffle=False)

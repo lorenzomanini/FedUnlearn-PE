@@ -2,6 +2,8 @@ from fisherunlearn.clients_utils import split_dataset_by_class_distribution, con
 from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 
+import fisherunlearn
+
 import os
 import pickle
 import random
@@ -16,8 +18,32 @@ import numpy as np
 import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+EVAL_BATCH_SIZE = 32
+TRAIN_BATCH_SIZE = 32
+INFO_BATCH_SIZE = 15
+MIA_BATCH_SIZE = 128
+
+fisherunlearn.set_device(DEVICE)
+fisherunlearn.set_info_batch_size(INFO_BATCH_SIZE)
+fisherunlearn.set_mia_batch_size(MIA_BATCH_SIZE)
+
+def set_device(device):
+    global DEVICE
+    DEVICE = device
+    fisherunlearn.set_device(device)
+
+def set_batch_sizes(info_batch_size=INFO_BATCH_SIZE, mia_batch_size=MIA_BATCH_SIZE, eval_batch_size=EVAL_BATCH_SIZE, train_batch_size=TRAIN_BATCH_SIZE):
+    global INFO_BATCH_SIZE, MIA_BATCH_SIZE, EVAL_BATCH_SIZE, TRAIN_BATCH_SIZE
+    INFO_BATCH_SIZE = info_batch_size
+    MIA_BATCH_SIZE = mia_batch_size
+    EVAL_BATCH_SIZE = eval_batch_size
+    TRAIN_BATCH_SIZE = train_batch_size
+    fisherunlearn.set_info_batch_size(info_batch_size)
+    fisherunlearn.set_mia_batch_size(mia_batch_size)
+
 if __name__ == "__main__":
-    global DEVICE, INFO_BATCH_SIZE, MIA_BATCH_SIZE, EVAL_BATCH_SIZE, TRAIN_BATCH_SIZE
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     INFO_BATCH_SIZE = 15
     MIA_BATCH_SIZE = 128
@@ -314,7 +340,7 @@ def get_trainer_function(init_params_dict):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model.train()
 
-            dataloader = DataLoader(concatenate_subsets(subsets), batch_size=32, shuffle=True)
+            dataloader = DataLoader(concatenate_subsets(subsets), TRAIN_BATCH_SIZE, shuffle=True)
             model.to(device)
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
             for epoch in tqdm.tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
@@ -403,7 +429,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path):
             pickle.dump(test_instance.client_information, f)
 
         iteration_results = []
-        for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Iter {i+1} - Unlearning tests", leave=False):
+        for test_params_dict in tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False):
             test_result = test_instance.run_test(test_params_dict)
             iteration_results.append(test_result)
 
