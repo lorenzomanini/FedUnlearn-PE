@@ -8,3 +8,4 @@ fisherunlearn/__pycache__/*
 .vscode/*
 sessions/*
 stat_tests/*
+resource_tests/*
