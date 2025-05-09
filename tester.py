@@ -14,12 +14,14 @@ from torch import nn
 from torch.utils.data import DataLoader, Subset
 from torchvision.models import resnet18
 
-from torch.multiprocessing import Pool
+from torch.multiprocessing import Pool, Queue
+torch.multiprocessing.set_start_method('spawn', force=True)
 
 import numpy as np
 import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
+from typing import TypedDict, Literal
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 EVAL_BATCH_SIZE = 32
@@ -69,6 +71,30 @@ def compute_accuracy(model, dataset):
     model.cpu()
 
     return correct / total
+
+class InitParamsDict(TypedDict):
+    test_name: str
+    dataset_name: Literal['mnist', 'cifar10']
+    num_clients: int
+    num_classes: int
+    distribution_type: Literal['preferential_class', 'uniform', 'dirichlet', 'random']
+    model_name: Literal['simple_cnn', 'resnet18']
+    loss_name: Literal['cross_entropy', 'mse']
+    trainer_name: Literal['sgd']
+    train_epochs: int
+    target_client: int
+    num_tests: int
+    info_use_converter: bool
+
+class TestParamsDict(TypedDict):
+    subtest: int
+    unlearning_method: Literal['information', 'parameters']
+    unlearning_percentage: float
+    retrain_epochs: int
+    tests: list[Literal['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia']]
+    mia_classifier_types: list[Literal['nn', 'logistic', 'svm']]
+    whitelist: list[str]
+    blacklist: list[str]
 
 
 class Test:
@@ -340,6 +366,7 @@ def simple_trainer(model, loss_fn, subsets, epochs):
             model.to(device)
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
             for epoch in tqdm.tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
+                loss = None
                 for inputs, targets in dataloader:
                     inputs, targets = inputs.to(device), targets.to(device)
 
@@ -348,6 +375,7 @@ def simple_trainer(model, loss_fn, subsets, epochs):
                     loss = loss_fn(outputs, targets) 
                     loss.backward()
                     optimizer.step()
+                logging.info(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
 
             model.eval()
             return model.cpu()
@@ -359,11 +387,13 @@ def get_trainer_function(init_params_dict):
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
 
-    
-def run_tests_iter(arg):
-    test_path = arg['test_path']
-    iter = arg['iter']
+def init_worker(device_queue):
+    logging.getLogger().setLevel(logging.INFO)
+    device = device_queue.get()
+    set_device(device)
 
+def run_tests_iter(iter, arg):
+    test_path = arg['test_path']
     train_dataset = arg['train_dataset']
     test_dataset = arg['test_dataset']
     clients_subsets = arg['clients_subsets']
@@ -376,14 +406,12 @@ def run_tests_iter(arg):
     test_iter_path = os.path.join(test_path, f"test_{iter}")
     os.makedirs(test_iter_path)
 
-    logger_file_handler = logging.FileHandler(os.path.join(test_iter_path, f"test_{iter}.log"))
-    logging.getLogger().addHandler(logger_file_handler)
-    logging.info(f"--- Starting Test Iteration {iter+1} ---")
+    log_file_handler = logging.FileHandler(os.path.join(test_iter_path, f"test_{iter}.log"))
+    log_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(log_file_handler)
+    logging.info(f"--- Starting Test Iteration {iter} ---")
 
-    device = arg.get('device', DEVICE)
-    set_device(device)
-
-    logging.info(f"Using device: {device}")
+    logging.info(f"Using device: {DEVICE}")
 
     trained_model_path = os.path.join(test_iter_path, "trained_model.pth")
     benchmark_model_path = os.path.join(test_iter_path, "benchmark_model.pth")
@@ -411,13 +439,13 @@ def run_tests_iter(arg):
         with open(test_results_path, 'wb') as f:
             pickle.dump(iteration_results, f)
 
-    logging.info(f"--- Finished Test Iteration {iter+1} ---")
-    logging.getLogger().removeHandler(logger_file_handler)
-    logger_file_handler.close()
+    logging.info(f"--- Finished Test Iteration {iter} ---")
+    logging.getLogger().removeHandler(log_file_handler)
+    log_file_handler.close()
     return errors
 
 
-def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1):
+def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=1, devices=None):
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -438,6 +466,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
     logging.info(f"Created test suite directory: {test_path}")
 
     log_file_handler = logging.FileHandler(os.path.join(test_path, f"{test_name}.log"))
+    log_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(log_file_handler)
 
     logging.info("Initial Configuration:")
@@ -464,9 +493,8 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
     with open(clients_indices_path, 'wb') as f:
         pickle.dump(client_indices, f)
 
-    args = [{
+    arg = {
                     'test_path': test_path,
-                    'iter': i,
                     'train_dataset': train_dataset,
                     'test_dataset': test_dataset,
                     'clients_subsets': clients_subsets,
@@ -475,41 +503,52 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1
                     'trainer_function': trainer_function,
                     'init_params_dict': init_params_dict,
                     'test_params_dicts': test_params_dicts
-                } for i in range(num_tests)]
-    
-    tests_errors = []
+                }
 
-    if workers == 1:
+    if num_workers == 1:
         with logging_redirect_tqdm():
             for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
-                errors=run_tests_iter(args[i])    
-                tests_errors.append(errors)
+                logging.getLogger().removeHandler(log_file_handler)
+                errors=run_tests_iter(i, arg)    
+                logging.getLogger().addHandler(log_file_handler)
+                if len(errors) > 0:
+                    logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
     else:
+        logging.info(f"Using {num_workers} workers for parallel processing.")
+        if devices is None:
+            logging.info(f"No devices provided, using default device {DEVICE} for all workers.")
+            devices = [DEVICE] * num_workers
+        elif len(devices) != num_workers:
+            logging.error(f"Number of devices provided ({len(devices)}) does not match number of workers ({num_workers}). Using default device {DEVICE} for all workers.")
+            devices = [DEVICE] * num_workers
+        else:
+            logging.info(f"Using provided devices: {devices}")
+
+        device_queue = Queue(num_workers)
+        for device in devices:
+            device_queue.put(device)
+                
+        logging.getLogger().removeHandler(log_file_handler)
         os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
         
-        # args[0]['device'] = 'cuda'
-        # args[1]['device'] = 'cpu'
-        
-        with Pool(workers) as pool:
-            errors=pool.map(run_tests_iter, args)
-            tests_errors.append(errors)
+        with Pool(num_workers, initializer=init_worker, initargs=(device_queue,)) as pool:
+            iters_errors=pool.starmap(run_tests_iter, [(i, arg) for i in range(num_tests)])
 
         os.environ['TQDM_DISABLE'] = '0'  # Re-enable tqdm in main process
+        logging.getLogger().addHandler(log_file_handler)
+
+        for i, errors in enumerate(iters_errors):
+            if len(errors) > 0:
+                logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
+
     
-    logging.info(f"Test suite '{test_name}' completed with {len(tests_errors)} iterations.")
-    for i, errors in enumerate(tests_errors):
-        if len(errors) > 0:
-            logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
-
-
-    logging.getLogger().removeHandler(log_file_handler)
-    log_file_handler.close()
+    logging.info(f"Test suite '{test_name}' completed")
 
 
 
 
 if __name__ == "__main__":
-    init_params_dict = {
+    init_params_dict : InitParamsDict = {
         'test_name': 'test_mnist_true', # Changed name slightly
 
         'dataset_name': 'mnist',
@@ -521,13 +560,13 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 6,                # Initial training epochs
+        'train_epochs': 1,                # Initial training epochs
 
         'target_client': 0,               # Client to unlearn
         'num_tests': 2                   # Number of independent repetitions
     }
 
-    test_params_dict = {
+    test_params_dict : TestParamsDict = {
             'subtest': 0,
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia'],
@@ -544,4 +583,5 @@ if __name__ == "__main__":
 
     save_path = './stat_tests'
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, workers=1)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=2, devices=[torch.device("cpu"), torch.device("cuda")])
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path)
