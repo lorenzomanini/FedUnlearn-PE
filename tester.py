@@ -18,7 +18,7 @@ from torch.multiprocessing import Pool, Queue
 torch.multiprocessing.set_start_method('spawn', force=True)
 
 import numpy as np
-import tqdm
+from tqdm.auto import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
 from typing import TypedDict, Literal
@@ -56,7 +56,7 @@ def compute_accuracy(model, dataset):
     correct = 0
     total = 0
 
-    tqdm_bar = tqdm.tqdm(total=len(dataloader), desc="Computing accuracy", unit="batch", leave=False)
+    tqdm_bar = tqdm(total=len(dataloader), desc="Computing accuracy", unit="batch", leave=False)
     
     with torch.no_grad():
         for images, labels in dataloader:
@@ -365,7 +365,7 @@ def simple_trainer(model, loss_fn, subsets, epochs):
             dataloader = DataLoader(concatenate_subsets(subsets), TRAIN_BATCH_SIZE, shuffle=True)
             model.to(device)
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            for epoch in tqdm.tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
+            for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
                 loss = None
                 for inputs, targets in dataloader:
                     inputs, targets = inputs.to(device), targets.to(device)
@@ -428,7 +428,7 @@ def run_tests_iter(iter, arg):
 
     iteration_results = []
     errors = []
-    for i, test_params_dict in enumerate(tqdm.tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
+    for i, test_params_dict in enumerate(tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
         try:
             test_result = test_instance.run_test(test_params_dict)
             iteration_results.append(test_result)
@@ -507,7 +507,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
 
     if num_workers == 1:
         with logging_redirect_tqdm():
-            for i in tqdm.tqdm(range(num_tests), desc="Running repeated tests"):
+            for i in tqdm(range(num_tests), desc="Running repeated tests"):
                 logging.getLogger().removeHandler(log_file_handler)
                 errors=run_tests_iter(i, arg)    
                 logging.getLogger().addHandler(log_file_handler)

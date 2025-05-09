@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 import copy
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.svm import SVC
