@@ -75,7 +75,7 @@ def compute_accuracy(model, dataset):
 
 class InitParamsDict(TypedDict):
     test_name: str
-    dataset_name: Literal['mnist', 'cifar10']
+    dataset_name: Literal['mnist', 'cifar10', 'FashionMNIST']
     num_clients: int
     num_classes: int
     distribution_type: Literal['preferential_class', 'uniform', 'dirichlet', 'random']
@@ -305,6 +305,21 @@ def get_datasets(init_params_dict):
         train_dataset = FashionMNIST(root='./data', train=True, download=True, transform=transform)
         test_dataset = FashionMNIST(root='./data', train=False, download=True, transform=transform)
 
+    elif dataset_name == "cartelli":
+        from torchvision.datasets import GTSRB
+        from torchvision import transforms
+
+        transform = transforms.Compose([
+            transforms.Resize((48, 48)), # Resize to a fixed size, e.g., 48x48
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.3337, 0.3064, 0.3171], # Mean for GTSRB pre-calculated
+                std=[0.2672, 0.2564, 0.2629]   # Std for GTSRB pre-calculated
+            )
+        ])
+        train_dataset = GTSRB(root='./data', split='train', download=True, transform=transform)
+        test_dataset = GTSRB(root='./data', split='test', download=True, transform=transform)
+
     else:
         raise ValueError("Unsupported dataset name")
 
@@ -360,6 +375,38 @@ class FLNet(nn.Sequential):
                     nn.Linear(512, 10)
                     )
 
+class FLNet2(nn.Sequential):
+    def __init__(self):
+        super(FLNet2, self).__init__(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(128, 256, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2, ceil_mode=True),
+
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),                    
+
+            nn.Linear(256, 512),
+            nn.ReLU(inplace=True),
+
+            nn.Linear(512, 43)
+        )
+
 def create_resnet(init_params_dict):
     num_classes = init_params_dict['num_classes']
     model = resnet18(num_classes=num_classes) 
@@ -375,6 +422,9 @@ def get_model_class(init_params_dict):
     elif model_name == 'resnet18':
         init_params_dict['info_use_converter'] = True
         return functools.partial(create_resnet, init_params_dict=init_params_dict.copy())
+    elif model_name == 'complex_cnn':
+        init_params_dict['info_use_converter'] = False
+        return FLNet2
     else:
         raise ValueError(f"Unsupported model name: {model_name}") 
 
@@ -578,18 +628,18 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
 
 if __name__ == "__main__":
     init_params_dict : InitParamsDict = {
-        'test_name': 'test_mnist_true', # Changed name slightly
+        'test_name': 'test_cartelli_true', # Changed name slightly
 
-        'dataset_name': 'mnist',
+        'dataset_name': 'cartelli',
         'num_clients': 5,
-        'num_classes': 10,                # Number of classes in the dataset
+        'num_classes': 43,                # Number of classes in the dataset
         'distribution_type': 'random',     # Distribution type
 
-        'model_name': 'simple_cnn',       # Model architecture
+        'model_name': 'complex_cnn',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 1,                # Initial training epochs
+        'train_epochs': 100,                # Initial training epochs
 
         'target_client': 0,               # Client to unlearn
         'num_tests': 2                   # Number of independent repetitions
@@ -603,7 +653,7 @@ if __name__ == "__main__":
             'retrain_epochs': 1
         }
     
-    percentages = np.arange(5, 10, 5)
+    percentages = np.arange(5, 20, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
