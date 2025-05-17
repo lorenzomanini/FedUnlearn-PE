@@ -230,7 +230,7 @@ def plot_information_parameters_tradeoff(information, method, whitelist=None, bl
     plt.grid()
     plt.show()
 
-def find_informative_params(information, method, percentage, whitelist=None, blacklist=None, graph=False, tuple=False):
+def find_informative_params(information, method, percentage, whitelist=None, blacklist=None, graph=False, tuple_out=False):
     informative_params = {}
     thresholds = {}
 
@@ -265,7 +265,7 @@ def find_informative_params(information, method, percentage, whitelist=None, bla
             continue
         if blacklist is not None and name in blacklist:
             continue
-        if tuple:
+        if tuple_out:
             informative_params[name] = tuple(torch.argwhere(layer_info > thresholds[name]).t())
         else:
             informative_params[name] = torch.argwhere(layer_info > thresholds[name])
