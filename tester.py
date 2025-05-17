@@ -8,6 +8,7 @@ import os
 import pickle
 import random
 import logging
+import functools
 
 import torch
 from torch import nn
@@ -276,6 +277,29 @@ def get_datasets(init_params_dict):
         train_dataset = CIFAR10(root='./data', train=True, download=True, transform=transform)
         test_dataset = CIFAR10(root='./data', train=False, download=True, transform=transform)
 
+    elif dataset_name == "FashionMNIST":
+        from torchvision.datasets import FashionMNIST
+        from torchvision import transforms
+
+        if model_name == 'simple_cnn':
+            transform = transforms.Compose([transforms.Resize(32), transforms.Grayscale(num_output_channels=1), transforms.ToTensor(), transforms.Normalize((0.5), (0.5), (0.5))])
+        elif model_name == 'resnet18':
+            transform = transforms.Compose([
+                transforms.Resize(64),                      
+                transforms.Grayscale(num_output_channels=3), 
+                transforms.ToTensor(),                      
+                transforms.Normalize(                      
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ])
+            
+        else:
+            raise ValueError("Unsupported model name for FashionMNIST dataset")
+
+        train_dataset = FashionMNIST(root='./data', train=True, download=True, transform=transform)
+        test_dataset = FashionMNIST(root='./data', train=False, download=True, transform=transform)
+
     else:
         raise ValueError("Unsupported dataset name")
 
@@ -330,24 +354,24 @@ class FLNet(nn.Sequential):
                     nn.ReLU(),
                     nn.Linear(512, 10)
                     )
-                
+
+def create_resnet(init_params_dict):
+    num_classes = init_params_dict['num_classes']
+    model = resnet18(num_classes=num_classes) 
+    if init_params_dict['dataset_name'] == 'mnist':
+        model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False) 
+    return model
+
 def get_model_class(init_params_dict):
     model_name = init_params_dict['model_name']
     if model_name == 'simple_cnn':
         init_params_dict['info_use_converter'] = False
-        return FLNet
+        return FLNet 
     elif model_name == 'resnet18':
         init_params_dict['info_use_converter'] = True
-        num_classes = init_params_dict['num_classes']
-        # Ensure ResNet18 input layer matches dataset (e.g., MNIST needs adjustment)
-        def create_resnet():
-            model = resnet18(num_classes=num_classes)
-            if init_params_dict['dataset_name'] == 'mnist':
-                model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-            return model
-        return create_resnet
+        return functools.partial(create_resnet, init_params_dict=init_params_dict.copy())
     else:
-        raise ValueError("Unsupported model name")
+        raise ValueError(f"Unsupported model name: {model_name}") 
 
 def get_loss_class(init_params_dict):
     loss_name = init_params_dict['loss_name']
