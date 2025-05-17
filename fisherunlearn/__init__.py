@@ -75,7 +75,7 @@ def compute_diag_ggn(model, criterion, inputs, targets, device='cpu'):
 
     return diag_hessian_params
 
-def compute_informations(model, criterion, dataloader_list, method='diag_ggn', use_converter=False):
+def compute_informations(model, criterion, dataloader_list, method='diag_ggn', use_converter=False, use_FIM=False):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = copy.deepcopy(model).to(device).eval()
     criterion = copy.deepcopy(criterion).to(device)
@@ -116,21 +116,23 @@ def compute_informations(model, criterion, dataloader_list, method='diag_ggn', u
     total_hessian = {}
     for name in clients_hessians[0].keys():
         total_hessian[name] = sum(client_hessian[name] for client_hessian in clients_hessians)
-
     
-    clients_informations = []
-    for client_idx in range(num_clients):
-        client_info = {}
-        for name in clients_hessians[client_idx].keys():
-            layer_info = 0.5 * torch.pow(clients_hessians[client_idx][name]/total_hessian[name], 2)
-            layer_info[total_hessian[name] == 0] = 0
-            client_info[name] = layer_info.detach().cpu()
-        clients_informations.append(client_info)
-    
-    return clients_informations
+    if use_FIM:
+        return clients_hessians
+    else:    
+        clients_informations = []
+        for client_idx in range(num_clients):
+            client_info = {}
+            for name in clients_hessians[client_idx].keys():
+                layer_info = 0.5 * torch.pow(clients_hessians[client_idx][name]/total_hessian[name], 2)
+                layer_info[total_hessian[name] == 0] = 0
+                client_info[name] = layer_info.detach().cpu()
+            clients_informations.append(client_info)
+        
+        return clients_informations
 
 
-def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', use_converter=True):
+def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', use_converter=True, use_FIM=False):
 
     global DEVICE
     global INFO_BATCH_SIZE
@@ -177,14 +179,17 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
     
     tqdm_bar.close()
 
-    
-    target_client_info = {}
-    for name in target_client_hessian.keys():
-        layer_info = 0.5 * torch.pow(target_client_hessian[name]/total_hessian[name], 2)
-        layer_info[total_hessian[name] == 0] = 0
-        target_client_info[name] = layer_info.detach().cpu()
-    
-    return target_client_info
+    if use_FIM:
+        target_client_hessian = {name: value.detach().cpu() for name, value in target_client_hessian.items()}
+        return target_client_hessian
+    else:
+        target_client_info = {}
+        for name in target_client_hessian.keys():
+            layer_info = 0.5 * torch.pow(target_client_hessian[name]/total_hessian[name], 2)
+            layer_info[total_hessian[name] == 0] = 0
+            target_client_info[name] = layer_info.detach().cpu()
+        
+        return target_client_info
 
 def plot_information_parameters_tradeoff(information, method, whitelist=None, blacklist=None):
     percentages = np.arange(0,100,0.1)

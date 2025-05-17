@@ -86,6 +86,7 @@ class InitParamsDict(TypedDict):
     target_client: int
     num_tests: int
     info_use_converter: bool
+    use_FIM: bool
 
 class TestParamsDict(TypedDict):
     subtest: int
@@ -131,8 +132,12 @@ class Test:
         logging.info("Training benchmark model...") 
         self.benchmark_model = self.trainer_function(self.model_class(), self.loss_class(), self.benchmark_datasets, self.train_epochs)
 
-        logging.info("Computing information...") 
-        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter)
+        logging.info("Computing information...")
+        if init_params_dict.get('use_FIM', False):
+            logging.info("Using FIM for information computation...")
+            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, use_FIM=True)
+        else:
+            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter)
 
 
     def run_test(self, test_params_dict):
