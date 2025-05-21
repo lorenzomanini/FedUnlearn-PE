@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 
 import torch.nn.functional as F
 from backpack import backpack, extend
-from backpack.extensions import DiagHessian, DiagGGNExact
+from backpack.extensions import DiagHessian, DiagGGNExact, DiagGGNMC
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -75,6 +75,26 @@ def compute_diag_ggn(model, criterion, inputs, targets, device='cpu'):
 
     return diag_hessian_params
 
+def compute_diag_ggn_mc(model, criterion, inputs, targets, device='cpu'):
+    inputs = inputs.to(device)
+    targets = targets.to(device)
+
+    model.zero_grad()
+    outputs = model(inputs)
+    loss = criterion(outputs, targets)
+
+    with backpack(DiagGGNMC()):
+        loss.backward()
+
+    diag_hessian_params = {}
+    for name, param in model.named_parameters():
+        if hasattr(param, 'diag_ggn_mc') and param.requires_grad:
+            diag_hessian_params[name] = param.diag_ggn_mc.clone().detach()
+            # Cleanup to avoid leftover references
+            del param.diag_ggn_mc
+
+    return diag_hessian_params
+
 def compute_informations(model, criterion, dataloader_list, method='diag_ggn', use_converter=False, use_FIM=False):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     model = copy.deepcopy(model).to(device).eval()
@@ -97,6 +117,8 @@ def compute_informations(model, criterion, dataloader_list, method='diag_ggn', u
                 diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
             elif method == 'diag_ggn':
                 diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=device)
+            elif method == 'diag_ggn_mc':
+                diag_h = compute_diag_ggn_mc(model, criterion, inputs, targets, device=device)
             else:
                 raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
 
@@ -159,6 +181,8 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
                 diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=DEVICE)
             elif method == 'diag_ggn':
                 diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=DEVICE)
+            elif method == 'diag_ggn_mc':
+                diag_h = compute_diag_ggn_mc(model, criterion, inputs, targets, device=DEVICE)
             else:
                 raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
 

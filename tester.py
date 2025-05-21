@@ -87,6 +87,7 @@ class InitParamsDict(TypedDict):
     num_tests: int
     info_use_converter: bool
     use_FIM: bool
+    hessian_method: Literal['diag_hessian', 'diag_ggn', 'diag_ggn_mc']
 
 class TestParamsDict(TypedDict):
     subtest: int
@@ -133,11 +134,12 @@ class Test:
         self.benchmark_model = self.trainer_function(self.model_class(), self.loss_class(), self.benchmark_datasets, self.train_epochs)
 
         logging.info("Computing information...")
+        hessian_method = init_params_dict.get('hessian_method', 'diag_ggn')
         if init_params_dict.get('use_FIM', False):
             logging.info("Using FIM for information computation...")
-            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, use_FIM=True)
+            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method, use_FIM=True)
         else:
-            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter)
+            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method)
 
 
     def run_test(self, test_params_dict):
@@ -628,21 +630,22 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
 
 if __name__ == "__main__":
     init_params_dict : InitParamsDict = {
-        'test_name': 'test_cartelli_true', # Changed name slightly
+        'test_name': 'test_info',
 
-        'dataset_name': 'cartelli',
+        'dataset_name': 'cifar10',
         'num_clients': 5,
-        'num_classes': 43,                # Number of classes in the dataset
+        'num_classes': 10,                # Number of classes in the dataset
         'distribution_type': 'random',     # Distribution type
 
-        'model_name': 'complex_cnn',       # Model architecture
+        'model_name': 'resnet18',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 100,                # Initial training epochs
+        'train_epochs': 0,                # Initial training epochs
 
         'target_client': 0,               # Client to unlearn
-        'num_tests': 2                   # Number of independent repetitions
+        'num_tests': 1,                   # Number of independent repetitions
+        'hessian_method': 'diag_ggn_mc'      # Hessian method
     }
 
     test_params_dict : TestParamsDict = {
@@ -652,8 +655,8 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
-    
-    percentages = np.arange(5, 20, 5)
+    set_batch_sizes(info_batch_size=128)
+    percentages = np.arange(5, 5, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
