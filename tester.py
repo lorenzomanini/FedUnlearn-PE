@@ -284,6 +284,24 @@ def get_datasets(init_params_dict):
         train_dataset = CIFAR10(root='./data', train=True, download=True, transform=transform)
         test_dataset = CIFAR10(root='./data', train=False, download=True, transform=transform)
 
+    elif dataset_name == 'cifar100':
+        from torchvision.datasets import CIFAR100
+        from torchvision import transforms
+
+        if model_name == 'simple_cnn':
+            transform = transforms.Compose([transforms.Resize(32), transforms.Grayscale(num_output_channels=1), transforms.ToTensor(), transforms.Normalize((0.5), (0.5), (0.5))])
+        elif model_name == 'resnet18':
+            transform = transforms.Compose([
+                    transforms.Resize(64),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+                ])
+        else:
+            raise ValueError("Unsupported model name for CIFAR100 dataset")
+
+        train_dataset = CIFAR100(root='./data', train=True, download=True, transform=transform)
+        test_dataset = CIFAR100(root='./data', train=False, download=True, transform=transform)
+
     elif dataset_name == "FashionMNIST":
         from torchvision.datasets import FashionMNIST
         from torchvision import transforms
@@ -632,16 +650,16 @@ if __name__ == "__main__":
     init_params_dict : InitParamsDict = {
         'test_name': 'test_info',
 
-        'dataset_name': 'cifar10',
+        'dataset_name': 'cifar100',
         'num_clients': 5,
-        'num_classes': 10,                # Number of classes in the dataset
+        'num_classes': 100,                # Number of classes in the dataset
         'distribution_type': 'random',     # Distribution type
 
         'model_name': 'resnet18',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 0,                # Initial training epochs
+        'train_epochs': 200,                # Initial training epochs
 
         'target_client': 0,               # Client to unlearn
         'num_tests': 1,                   # Number of independent repetitions
