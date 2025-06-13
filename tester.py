@@ -75,10 +75,10 @@ def compute_accuracy(model, dataset):
 
 class InitParamsDict(TypedDict):
     test_name: str
-    dataset_name: Literal['mnist', 'cifar10', 'FashionMNIST']
+    dataset_name: Literal['mnist', 'cifar10', 'FashionMNIST', 'cifar100']
     num_clients: int
     num_classes: int
-    distribution_type: Literal['preferential_class', 'uniform', 'dirichlet', 'random']
+    distribution_type: Literal['preferential_class', 'uniform', 'dirichlet', 'random', 'categorical']
     model_name: Literal['simple_cnn', 'resnet18']
     loss_name: Literal['cross_entropy', 'mse']
     trainer_name: Literal['sgd']
@@ -94,7 +94,7 @@ class TestParamsDict(TypedDict):
     unlearning_method: Literal['information', 'parameters']
     unlearning_percentage: float
     retrain_epochs: int
-    tests: list[Literal['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia']]
+    tests: list[Literal['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia', 'categorical_accuracies']]
     mia_classifier_types: list[Literal['nn', 'logistic', 'svm']]
     whitelist: list[str]
     blacklist: list[str]
@@ -113,6 +113,7 @@ class Test:
         self.benchmark_datasets = [subset for i, subset in enumerate(self.clients_datasets) if i != self.target_client]
 
         self.classes_datasets = split_dataset_by_class_distribution(self.test_dataset, np.identity(init_params_dict['num_classes']))
+        self.categorical_test_datasets = [subset for i, subset in enumerate(self.classes_datasets) if i != self.target_client]
 
         self.model_class = model_class
         self.loss_class = loss_class
@@ -230,6 +231,21 @@ class Test:
 
             result['reset_class_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.classes_datasets]
             result['retrained_class_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.classes_datasets]
+
+        if 'categorical_accuracies' in test_params_dict['tests']:
+            logging.info("Computing Categorical accuracies...")
+            try:
+                result['trained_cat_accuracy'] = self.trained_cat_accuracy
+                result['benchmark_cat_accuracy'] = self.benchmark_cat_accuracy
+            except AttributeError:
+                self.trained_cat_accuracy = compute_accuracy(self.trained_model, self.categorical_test_datasets)
+                self.benchmark_cat_accuracy = compute_accuracy(self.benchmark_model, self.categorical_test_datasets)
+                result['trained_cat_accuracy'] = self.trained_cat_accuracy
+                result['benchmark_cat_accuracy'] = self.benchmark_cat_accuracy
+            
+            result['reset_test_accuracy'] = compute_accuracy(reset_model, self.categorical_test_datasets)
+            result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.categorical_test_datasets)
+
 
         if 'mia' in test_params_dict['tests']:
             logging.info("Running MIA...")
@@ -363,7 +379,13 @@ def get_clients_subsets(dataset, init_params_dict):
                 class_distribution[i, j] = p_common
             class_distribution[i, num_common_classes+i] = p_preferred
         return split_dataset_by_class_distribution(dataset, class_distribution)
-
+    
+    elif distribution_type == 'categorical':
+        if num_clients != num_classes:
+            raise ValueError("Number of clients must be equal to number of classes for purely categorical distribution")
+        
+        return split_dataset_by_class_distribution(dataset, np.identity(num_classes))
+    
     elif distribution_type == 'uniform':
         class_distribution = np.ones((num_clients, num_classes)) / num_classes
         return split_dataset_by_class_distribution(dataset, class_distribution)
@@ -650,16 +672,16 @@ if __name__ == "__main__":
     init_params_dict : InitParamsDict = {
         'test_name': 'test_info',
 
-        'dataset_name': 'cifar100',
-        'num_clients': 5,
-        'num_classes': 100,                # Number of classes in the dataset
-        'distribution_type': 'random',     # Distribution type
+        'dataset_name': 'cifar10',
+        'num_clients': 10,
+        'num_classes': 10,                # Number of classes in the dataset
+        'distribution_type': 'categorical',     # Distribution type
 
         'model_name': 'resnet18',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 200,                # Initial training epochs
+        'train_epochs': 4,                # Initial training epochs
 
         'target_client': 0,               # Client to unlearn
         'num_tests': 1,                   # Number of independent repetitions
@@ -669,11 +691,11 @@ if __name__ == "__main__":
     test_params_dict : TestParamsDict = {
             'subtest': 0,
             'unlearning_method': 'information',
-            'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia'],
+            'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'categorical_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
-    set_batch_sizes(info_batch_size=128)
+
     percentages = np.arange(5, 5, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
