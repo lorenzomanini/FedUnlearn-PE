@@ -1,6 +1,8 @@
 import numpy as np
 from collections import defaultdict
 from torch.utils.data import Subset
+from torch.utils.data import TensorDataset
+import torch
 
 def split_dataset_by_class_distribution(dataset, class_distributions):
 
@@ -53,3 +55,69 @@ def concatenate_subsets(subsets):
         indices.extend(subset.indices)
     full_dataset = subsets[0].dataset
     return Subset(full_dataset, indices)
+
+
+import torch
+import numpy as np
+from torch.utils.data import TensorDataset
+from art.attacks.poisoning import PoisoningAttackBackdoor
+from art.attacks.poisoning.perturbations import add_pattern_bd
+
+def poisoning_data(clients_subsets, init_params_dict):
+
+    target_client = init_params_dict["target_client"]
+    num_classes = init_params_dict["num_classes"]
+    target_label = init_params_dict.get("target_label", 9)
+
+    backdoor = PoisoningAttackBackdoor(add_pattern_bd)
+    example_target = np.zeros(num_classes)
+    example_target[target_label] = 1
+
+    target_subset = clients_subsets[target_client]
+    underlying_dataset = target_subset.dataset
+
+    local_indices_to_poison = []
+    true_labels_of_poisoned_samples = []
+
+    for local_idx, global_idx in enumerate(target_subset.indices):
+        true_label = underlying_dataset[global_idx][1]
+        if true_label != target_label:
+            local_indices_to_poison.append(local_idx)
+            true_labels_of_poisoned_samples.append(true_label)
+
+    if not local_indices_to_poison:
+        return clients_subsets, TensorDataset(torch.empty(0), torch.empty(0))
+
+    data_to_poison = np.array([
+        np.transpose(underlying_dataset[target_subset.indices[local_idx]][0].numpy(), (1, 2, 0))
+        for local_idx in local_indices_to_poison
+    ])
+
+    poisoned_data, poisoned_labels = backdoor.poison(
+        data_to_poison, y=example_target, broadcast=True
+    )
+
+    for i, local_idx in enumerate(local_indices_to_poison):
+        global_dataset_idx = target_subset.indices[local_idx]
+
+        poisoned_image_np = np.transpose(poisoned_data[i], (2, 0, 1))
+        
+        new_image = torch.tensor(poisoned_image_np, dtype=torch.float32)
+        new_label = int(np.argmax(poisoned_labels[i]))
+
+        if hasattr(underlying_dataset, 'data') and hasattr(underlying_dataset, 'targets'):
+            underlying_dataset.data[global_dataset_idx] = new_image
+            underlying_dataset.targets[global_dataset_idx] = new_label
+        elif hasattr(underlying_dataset, 'samples'):
+            underlying_dataset.samples[global_dataset_idx] = (new_image, new_label)
+        else:
+            underlying_dataset[global_dataset_idx] = (new_image, new_label)
+
+    poisoned_images_for_eval = torch.stack([
+        torch.tensor(np.transpose(poisoned_data[i], (2, 0, 1)), dtype=torch.float32)
+        for i in range(len(poisoned_data))
+    ])
+    true_labels_tensor = torch.tensor(true_labels_of_poisoned_samples, dtype=torch.long)
+    true_dataset = TensorDataset(poisoned_images_for_eval, true_labels_tensor)
+
+    return clients_subsets, true_dataset

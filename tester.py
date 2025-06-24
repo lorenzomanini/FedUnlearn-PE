@@ -1,4 +1,4 @@
-from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets
+from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets, poisoning_data
 from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 
@@ -88,13 +88,14 @@ class InitParamsDict(TypedDict):
     info_use_converter: bool
     use_FIM: bool
     hessian_method: Literal['diag_hessian', 'diag_ggn', 'diag_ggn_mc']
+    poison: bool
 
 class TestParamsDict(TypedDict):
     subtest: int
     unlearning_method: Literal['information', 'parameters']
     unlearning_percentage: float
     retrain_epochs: int
-    tests: list[Literal['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia', 'categorical_accuracies']]
+    tests: list[Literal['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia', 'categorical_accuracies', 'poison_accuracy']]
     mia_classifier_types: list[Literal['nn', 'logistic', 'svm']]
     whitelist: list[str]
     blacklist: list[str]
@@ -246,6 +247,28 @@ class Test:
             result['reset_test_accuracy'] = compute_accuracy(reset_model, self.categorical_test_datasets)
             result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.categorical_test_datasets)
 
+        if 'poisoning_test' in test_params_dict['tests']:
+            logging.info("Computing unlearning accuracy on poisoned samples...")
+            poisoned_test_set, true_test_set = poisoning_data(self.test_dataset, init_params_dict)
+            try:
+                result['trained_poisoning_accuracy'] = self.trained_poisoning_accuracy
+                result['benchmark_poisoning_accuracy'] = self.benchmark_poisoning_accuracy
+                result['trained_poisoning_accuracy_clean'] = self.trained_poisoning_accuracy_clean
+                result['benchmark_poisoning_accuracy_clean'] = self.benchmark_poisoning_accuracy_clean
+            except AttributeError:
+                self.trained_poisoning_accuracy = compute_accuracy(self.trained_model, poisoned_test_set)
+                self.benchmark_poisoning_accuracy = compute_accuracy(self.benchmark_model, poisoned_test_set)
+                self.trained_poisoning_accuracy_clean = compute_accuracy(self.trained_model, true_test_set)
+                self.benchmark_poisoning_accuracy_clean = compute_accuracy(self.benchmark_model, true_test_set)
+                result['trained_poisoning_accuracy_clean'] = self.trained_poisoning_accuracy_clean
+                result['benchmark_poisoning_accuracy_clean'] = self.benchmark_poisoning_accuracy_clean
+                result['trained_poisoning_accuracy'] = self.trained_poisoning_accuracy
+                result['benchmark_poisoning_accuracy'] = self.benchmark_poisoning_accuracy
+
+            result['reset_poisoning_accuracy_clean'] = compute_accuracy(reset_model, true_test_set)
+            result['retrained_poisoning_accuracy_clean'] = compute_accuracy(retrained_model, true_test_set)
+            result['reset_poisoning_accuracy'] = compute_accuracy(reset_model, poisoned_test_set)
+            result['retrained_poisoning_accuracy'] = compute_accuracy(retrained_model, poisoned_test_set)
 
         if 'mia' in test_params_dict['tests']:
             logging.info("Running MIA...")
@@ -609,28 +632,36 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
     loss_class = get_loss_class(init_params_dict) 
     trainer_function = get_trainer_function(init_params_dict)
 
+    if init_params_dict.get('poison', False):
+        true_labels_of_poisoned = []
+        logging.info("Poisoning is enabled. Applying backdoor attack to target client...")
+        clients_subsets, _ = poisoning_data(clients_subsets, init_params_dict)
+        logging.info(f"Poisoning complete.")
+    else:
+        logging.info("Poisoning is disabled. Using clean data for all clients.")
+
     client_indices = [subset.indices for subset in clients_subsets]
     clients_indices_path = os.path.join(test_path, "clients_indices.pkl")
     with open(clients_indices_path, 'wb') as f:
         pickle.dump(client_indices, f)
 
     arg = {
-                    'test_path': test_path,
-                    'train_dataset': train_dataset,
-                    'test_dataset': test_dataset,
-                    'clients_subsets': clients_subsets,
-                    'model_class': model_class,
-                    'loss_class': loss_class,
-                    'trainer_function': trainer_function,
-                    'init_params_dict': init_params_dict,
-                    'test_params_dicts': test_params_dicts
-                }
+        'test_path': test_path,
+        'train_dataset': train_dataset,
+        'test_dataset': test_dataset,
+        'clients_subsets': clients_subsets,
+        'model_class': model_class,
+        'loss_class': loss_class,
+        'trainer_function': trainer_function,
+        'init_params_dict': init_params_dict,
+        'test_params_dicts': test_params_dicts
+    }
 
     if num_workers == 1:
         with logging_redirect_tqdm():
             for i in tqdm(range(num_tests), desc="Running repeated tests"):
                 logging.getLogger().removeHandler(log_file_handler)
-                errors=run_tests_iter(i, arg)    
+                errors = run_tests_iter(i, arg)    
                 logging.getLogger().addHandler(log_file_handler)
                 if len(errors) > 0:
                     logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
@@ -650,42 +681,43 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
             device_queue.put(device)
                 
         logging.getLogger().removeHandler(log_file_handler)
-        os.environ['TQDM_DISABLE'] = '1'  # Disable tqdm in subprocesses
+        os.environ['TQDM_DISABLE'] = '1'
         
         with Pool(num_workers, initializer=init_worker, initargs=(device_queue,)) as pool:
-            iters_errors=pool.starmap(run_tests_iter, [(i, arg) for i in range(num_tests)])
+            iters_errors = pool.starmap(run_tests_iter, [(i, arg) for i in range(num_tests)])
 
-        os.environ['TQDM_DISABLE'] = '0'  # Re-enable tqdm in main process
+        os.environ['TQDM_DISABLE'] = '0'
         logging.getLogger().addHandler(log_file_handler)
 
         for i, errors in enumerate(iters_errors):
             if len(errors) > 0:
                 logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
 
-    
     logging.info(f"Test suite '{test_name}' completed")
-
-
 
 
 if __name__ == "__main__":
     init_params_dict : InitParamsDict = {
         'test_name': 'test_info',
 
-        'dataset_name': 'cifar10',
+        'dataset_name': 'mnist',
         'num_clients': 10,
         'num_classes': 10,                # Number of classes in the dataset
         'distribution_type': 'categorical',     # Distribution type
 
-        'model_name': 'resnet18',       # Model architecture
+        'model_name': 'simple_cnn',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
         'train_epochs': 4,                # Initial training epochs
 
+        'use_FIM' : False,
+        'info_use_converter': False,
+
         'target_client': 0,               # Client to unlearn
         'num_tests': 1,                   # Number of independent repetitions
-        'hessian_method': 'diag_ggn_mc'      # Hessian method
+        'hessian_method': 'diag_hessian',      # Hessian method
+        'poison' : True,
     }
 
     test_params_dict : TestParamsDict = {
