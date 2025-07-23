@@ -665,7 +665,7 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
         'loss_class': loss_class,
         'trainer_function': trainer_function,
         'init_params_dict': init_params_dict,
-        'test_params_dicts': test_params_dicts
+        'test_params_dicts': test_params_dicts,
         'attack_eval_dataset': attack_eval_dataset,
         'unlearning_eval_dataset': unlearning_eval_dataset
     }
