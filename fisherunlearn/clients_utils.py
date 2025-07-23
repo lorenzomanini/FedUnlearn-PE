@@ -58,6 +58,32 @@ def concatenate_subsets(subsets):
     full_dataset = subsets[0].dataset
     return Subset(full_dataset, indices)
 
+import torch
+import numpy as np
+from torch.utils.data import TensorDataset
+from art.attacks.poisoning import PoisoningAttackBackdoor
+from art.attacks.poisoning.perturbations import add_pattern_bd
+
+
+def create_poisoned_data(clients_subsets, init_params_dict):
+
+    poisoned_clients_subsets, unlearning_eval_dataset = poisoning_data(
+        clients_subsets, init_params_dict
+    )
+
+    if len(unlearning_eval_dataset) == 0:
+        # If no data was poisoned, the attack evaluation set is also empty
+        attack_eval_dataset = TensorDataset(torch.empty(0), torch.empty(0))
+    else:
+        # Create the dataset for evaluating attack success
+        poisoned_images = unlearning_eval_dataset.tensors[0]
+        poison_target_label = init_params_dict.get("target_label", 9)
+        target_labels = torch.full((len(poisoned_images),), poison_target_label, dtype=torch.long)
+        attack_eval_dataset = TensorDataset(poisoned_images, target_labels)
+        
+    return poisoned_clients_subsets, attack_eval_dataset, unlearning_eval_dataset
+
+
 def poisoning_data(clients_subsets, init_params_dict):
 
     target_client = init_params_dict["target_client"]
@@ -88,7 +114,7 @@ def poisoning_data(clients_subsets, init_params_dict):
         for local_idx in local_indices_to_poison
     ])
 
-    poisoned_data, poisoned_labels = backdoor.poison(
+    poisoned_data_np, poisoned_labels_np = backdoor.poison(
         data_to_poison, y=example_target, broadcast=True
     )
 
@@ -97,9 +123,9 @@ def poisoning_data(clients_subsets, init_params_dict):
     for i, local_idx in enumerate(local_indices_to_poison):
         global_dataset_idx = target_subset.indices[local_idx]
         
-        poisoned_image_np = np.transpose(poisoned_data[i], (2, 0, 1))
+        poisoned_image_np = np.transpose(poisoned_data_np[i], (2, 0, 1))
         new_image_tensor = torch.tensor(poisoned_image_np, dtype=torch.float32)
-        new_label = int(np.argmax(poisoned_labels[i]))
+        new_label = int(np.argmax(poisoned_labels_np[i]))
 
         if hasattr(underlying_dataset, 'data') and hasattr(underlying_dataset, 'targets'):
             underlying_dataset.data[global_dataset_idx] = new_image_tensor
@@ -112,6 +138,6 @@ def poisoning_data(clients_subsets, init_params_dict):
         poisoned_images_for_eval.append(new_image_tensor)
 
     true_labels_tensor = torch.tensor(true_labels_of_poisoned_samples, dtype=torch.long)
-    evaluation_dataset = TensorDataset(torch.stack(poisoned_images_for_eval), true_labels_tensor)
+    unlearning_eval_dataset = TensorDataset(torch.stack(poisoned_images_for_eval), true_labels_tensor)
 
-    return clients_subsets, evaluation_dataset
+    return clients_subsets, unlearning_eval_dataset
