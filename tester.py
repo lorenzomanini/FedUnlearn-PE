@@ -102,7 +102,7 @@ class TestParamsDict(TypedDict):
 
 
 class Test:
-    def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict={}):
+    def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict={}, attack_eval_dataset=None, unlearning_eval_dataset=None):
 
         # Initialize parameters
         self.train_dataset = train_dataset
@@ -115,6 +115,9 @@ class Test:
 
         self.classes_datasets = split_dataset_by_class_distribution(self.test_dataset, np.identity(init_params_dict['num_classes']))
         self.categorical_test_datasets = [subset for i, subset in enumerate(self.classes_datasets) if i != self.target_client]
+
+        self.attack_eval_dataset = attack_eval_dataset
+        self.unlearning_eval_dataset = unlearning_eval_dataset
 
         self.model_class = model_class
         self.loss_class = loss_class
@@ -246,29 +249,33 @@ class Test:
             
             result['reset_test_accuracy'] = compute_accuracy(reset_model, self.categorical_test_datasets)
             result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.categorical_test_datasets)
-
-        if 'poisoning_test' in test_params_dict['tests']:
-            logging.info("Computing unlearning accuracy on poisoned samples...")
-            poisoned_test_set, true_test_set = poisoning_data(self.test_dataset, init_params_dict)
+        
+        if 'attack_success_rate' in test_params_dict['tests'] and self.attack_eval_dataset:
+            logging.info("Computing Attack Success Rate (ASR)...")
             try:
-                result['trained_poisoning_accuracy'] = self.trained_poisoning_accuracy
-                result['benchmark_poisoning_accuracy'] = self.benchmark_poisoning_accuracy
-                result['trained_poisoning_accuracy_clean'] = self.trained_poisoning_accuracy_clean
-                result['benchmark_poisoning_accuracy_clean'] = self.benchmark_poisoning_accuracy_clean
+                result['trained_asr'] = self.trained_asr_accuracy
+                result['benchmark_asr'] = self.benchmark_asr_accuracy
             except AttributeError:
-                self.trained_poisoning_accuracy = compute_accuracy(self.trained_model, poisoned_test_set)
-                self.benchmark_poisoning_accuracy = compute_accuracy(self.benchmark_model, poisoned_test_set)
-                self.trained_poisoning_accuracy_clean = compute_accuracy(self.trained_model, true_test_set)
-                self.benchmark_poisoning_accuracy_clean = compute_accuracy(self.benchmark_model, true_test_set)
-                result['trained_poisoning_accuracy_clean'] = self.trained_poisoning_accuracy_clean
-                result['benchmark_poisoning_accuracy_clean'] = self.benchmark_poisoning_accuracy_clean
-                result['trained_poisoning_accuracy'] = self.trained_poisoning_accuracy
-                result['benchmark_poisoning_accuracy'] = self.benchmark_poisoning_accuracy
-
-            result['reset_poisoning_accuracy_clean'] = compute_accuracy(reset_model, true_test_set)
-            result['retrained_poisoning_accuracy_clean'] = compute_accuracy(retrained_model, true_test_set)
-            result['reset_poisoning_accuracy'] = compute_accuracy(reset_model, poisoned_test_set)
-            result['retrained_poisoning_accuracy'] = compute_accuracy(retrained_model, poisoned_test_set)
+                self.trained_asr_accuracy = compute_accuracy(self.trained_model, self.attack_eval_dataset)
+                self.benchmark_asr_accuracy = compute_accuracy(self.benchmark_model, self.attack_eval_dataset)
+                result['trained_asr'] = self.trained_asr_accuracy
+                result['benchmark_asr'] = self.benchmark_asr_accuracy
+                
+            result['reset_asr'] = compute_accuracy(reset_model, self.attack_eval_dataset)
+            result['retrained_asr'] = compute_accuracy(retrained_model, self.attack_eval_dataset)
+        
+        if 'unlearning_accuracy' in test_params_dict['tests'] and self.unlearning_eval_dataset:
+            logging.info("Computing Unlearning Accuracy on poisoned data...")
+            try:
+                result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
+                result['benchmark_asr_accuracy'] = self.benchmark_asr_accuracy
+            except AttributeError:
+                self.trained_unlearning_accuracy = compute_accuracy(self.trained_model, self.trained_unlearning_accuracy)
+                self.benchmark_asr_accuracy = compute_accuracy(self.benchmark_model, self.unlearning_eval_dataset)
+                result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
+                result['benchmark_asr_accuracy'] = self.benchmark_asr_accuracy
+            result['reset_unlearning_accuracy'] = compute_accuracy(reset_model, self.unlearning_eval_dataset)
+            result['retrained_unlearning_accuracy'] = compute_accuracy(retrained_model, self.unlearning_eval_dataset)
 
         if 'mia' in test_params_dict['tests']:
             logging.info("Running MIA...")
@@ -546,6 +553,8 @@ def run_tests_iter(iter, arg):
     trainer_function = arg['trainer_function']
     init_params_dict = arg['init_params_dict']
     test_params_dicts = arg['test_params_dicts']
+    attack_eval_dataset = arg['attack_eval_dataset']
+    unlearning_eval_dataset = arg['unlearning_eval_dataset']
 
     test_iter_path = os.path.join(test_path, f"test_{iter}")
     os.makedirs(test_iter_path)
@@ -562,8 +571,8 @@ def run_tests_iter(iter, arg):
     client_information_path = os.path.join(test_iter_path, "client_information.pkl")
     test_results_path = os.path.join(test_iter_path, "test_results.pkl")
 
-    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict)
-
+    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict, attack_eval_dataset, unlearning_eval_dataset)
+    
     torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
     torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
 
@@ -632,13 +641,15 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
     loss_class = get_loss_class(init_params_dict) 
     trainer_function = get_trainer_function(init_params_dict)
 
+    attack_eval_dataset = None
+    unlearning_eval_dataset = None
+    
     if init_params_dict.get('poison', False):
-        true_labels_of_poisoned = []
-        logging.info("Poisoning is enabled. Applying backdoor attack to target client...")
-        clients_subsets, _ = poisoning_data(clients_subsets, init_params_dict)
-        logging.info(f"Poisoning complete.")
+        logging.info("Poisoning is enabled. Applying backdoor attack...")
+        clients_subsets, attack_eval_dataset, unlearning_eval_dataset = create_poisoned_data(clients_subsets, init_params_dict)
+        logging.info("Poisoning complete.")
     else:
-        logging.info("Poisoning is disabled. Using clean data for all clients.")
+        logging.info("Poisoning is disabled.")
 
     client_indices = [subset.indices for subset in clients_subsets]
     clients_indices_path = os.path.join(test_path, "clients_indices.pkl")
@@ -655,6 +666,8 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
         'trainer_function': trainer_function,
         'init_params_dict': init_params_dict,
         'test_params_dicts': test_params_dicts
+        'attack_eval_dataset': attack_eval_dataset,
+        'unlearning_eval_dataset': unlearning_eval_dataset
     }
 
     if num_workers == 1:
