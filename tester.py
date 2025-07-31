@@ -270,10 +270,10 @@ class Test:
                 result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
                 result['benchmark_asr_accuracy'] = self.benchmark_asr_accuracy
             except AttributeError:
-                self.trained_unlearning_accuracy = compute_accuracy(self.trained_model, self.trained_unlearning_accuracy)
-                self.benchmark_asr_accuracy = compute_accuracy(self.benchmark_model, self.unlearning_eval_dataset)
+                self.trained_unlearning_accuracy = compute_accuracy(self.trained_model, self.unlearning_eval_dataset)
+                self.benchmark_unlearning_accuracy = compute_accuracy(self.benchmark_model, self.unlearning_eval_dataset)
                 result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
-                result['benchmark_asr_accuracy'] = self.benchmark_asr_accuracy
+                result['benchmark_asr_accuracy'] = self.benchmark_unlearning_accuracy
             result['reset_unlearning_accuracy'] = compute_accuracy(reset_model, self.unlearning_eval_dataset)
             result['retrained_unlearning_accuracy'] = compute_accuracy(retrained_model, self.unlearning_eval_dataset)
 
