@@ -35,7 +35,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -48,7 +48,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         } 
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
@@ -85,7 +85,7 @@ if __name__ == "__main__":
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -97,7 +97,7 @@ if __name__ == "__main__":
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 0
         } 
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
@@ -135,7 +135,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -148,7 +148,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         } 
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
@@ -185,7 +185,7 @@ if __name__ == "__main__":
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -197,7 +197,7 @@ if __name__ == "__main__":
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 0
         } 
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
@@ -235,7 +235,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -248,7 +248,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         } 
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
@@ -285,7 +285,7 @@ if __name__ == "__main__":
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -297,7 +297,7 @@ if __name__ == "__main__":
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
@@ -333,7 +333,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 90, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -345,7 +345,7 @@ if __name__ == "__main__":
             'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 0
         }
-    percentages = np.arange(5, 50, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_1[i]['unlearning_percentage'] = percentage
