@@ -277,6 +277,12 @@ def find_informative_params(information, method, percentage, whitelist=None, bla
             sorted_layer_info=np.sort(layer_info.flatten())[::-1]
             threshold_idx = int(len(sorted_layer_info) / 100 * percentage)
             thresholds[name] = sorted_layer_info[threshold_idx]
+        elif method == 'random':
+            layer = torch.zeros_like(layer_info)
+            flat_view = layer.view(-1)
+            flat_view[torch.randperm(flat_view.numel())[:int(flat_view.numel() * percentage / 100)]] = 1
+            thresholds[name] = 0.5
+            information[name] = layer
         else:
             raise ValueError("Invalid method. Use 'information' or 'parameters'.")
     

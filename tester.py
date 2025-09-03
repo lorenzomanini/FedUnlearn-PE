@@ -135,6 +135,7 @@ class Test:
 
         logging.info("Training model...") 
         self.trained_model = self.trainer_function(self.model_class(), self.loss_class(), self.clients_datasets, self.train_epochs)
+        self.num_total_params = sum(p.numel() for p in self.trained_model.parameters())
 
         logging.info("Training benchmark model...") 
         self.benchmark_model = self.trainer_function(self.model_class(), self.loss_class(), self.benchmark_datasets, self.train_epochs)
@@ -159,10 +160,10 @@ class Test:
         logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}")
 
         informative_params = find_informative_params(self.client_information, unlearning_method, unlearning_percentage, whitelist, blacklist)
-        total_individual_reset_params = 0
+        num_reset_params = 0
         for name, indices_tensor in informative_params.items():
             if indices_tensor is not None and indices_tensor.numel() > 0: 
-                 total_individual_reset_params += indices_tensor.shape[0]
+                 num_reset_params += indices_tensor.shape[0]
 
         reset_model = self.model_class()
         reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params)
@@ -173,11 +174,24 @@ class Test:
         retrained_model = self.model_class()
         retrained_model.load_state_dict(retrainer.get_retrained_params())
 
+        self.reset_params_percentage = num_reset_params / self.num_total_params * 100
+        random_params = find_informative_params(self.client_information, 'random', self.reset_params_percentage, whitelist, blacklist)
+
+        random_reset_model = self.model_class()
+        random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params)
+        random_reset_model.load_state_dict(random_reset_state_dict)
+
+        random_retrainer = UnlearnNet(random_reset_model, random_params)
+        self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
+        random_retrained_model = self.model_class()
+        random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
 
         # Execute tests
         result = {}
 
-        result['total_individual_reset_params'] = total_individual_reset_params
+        result['num_total_params'] = self.num_total_params
+        result['num_reset_params'] = num_reset_params
+        result['reset_params_percentage'] = self.reset_params_percentage
 
         if 'test_accuracy' in test_params_dict['tests']:
             logging.info("Computing test accuracies...")
@@ -193,7 +207,9 @@ class Test:
             
             result['reset_test_accuracy'] = compute_accuracy(reset_model, self.test_dataset)
             result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.test_dataset)
-        
+            result['random_reset_test_accuracy'] = compute_accuracy(random_reset_model, self.test_dataset)
+            result['random_retrained_test_accuracy'] = compute_accuracy(random_retrained_model, self.test_dataset)
+
         if 'target_accuracy' in test_params_dict['tests']:
             logging.info("Computing target accuracies...")
             try:
@@ -207,7 +223,9 @@ class Test:
 
             result['reset_target_accuracy'] = compute_accuracy(reset_model, self.target_dataset)
             result['retrained_target_accuracy'] = compute_accuracy(retrained_model, self.target_dataset)
-        
+            result['random_reset_target_accuracy'] = compute_accuracy(random_reset_model, self.target_dataset)
+            result['random_retrained_target_accuracy'] = compute_accuracy(random_retrained_model, self.target_dataset)
+
         if 'clients_accuracies' in test_params_dict['tests']:
             logging.info("Computing clients accuracies...")
             try:
@@ -221,6 +239,8 @@ class Test:
             
             result['reset_clients_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.clients_datasets]
             result['retrained_clients_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.clients_datasets]
+            result['random_reset_clients_accuracies'] = [compute_accuracy(random_reset_model, subset) for subset in self.clients_datasets]
+            result['random_retrained_clients_accuracies'] = [compute_accuracy(random_retrained_model, subset) for subset in self.clients_datasets]
 
         if 'class_accuracies' in test_params_dict['tests']:
             logging.info("Computing class accuracies...")
@@ -235,6 +255,8 @@ class Test:
 
             result['reset_class_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.classes_datasets]
             result['retrained_class_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.classes_datasets]
+            result['random_reset_class_accuracies'] = [compute_accuracy(random_reset_model, subset) for subset in self.classes_datasets]
+            result['random_retrained_class_accuracies'] = [compute_accuracy(random_retrained_model, subset) for subset in self.classes_datasets]
 
         if 'categorical_accuracies' in test_params_dict['tests']:
             logging.info("Computing Categorical accuracies...")
@@ -249,7 +271,9 @@ class Test:
             
             result['reset_test_accuracy'] = compute_accuracy(reset_model, self.categorical_test_datasets)
             result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.categorical_test_datasets)
-        
+            result['random_reset_test_accuracy'] = compute_accuracy(random_reset_model, self.categorical_test_datasets)
+            result['random_retrained_test_accuracy'] = compute_accuracy(random_retrained_model, self.categorical_test_datasets)
+
         if 'attack_success_rate' in test_params_dict['tests'] and self.attack_eval_dataset:
             logging.info("Computing Attack Success Rate (ASR)...")
             try:
@@ -263,7 +287,9 @@ class Test:
                 
             result['reset_asr'] = compute_accuracy(reset_model, self.attack_eval_dataset)
             result['retrained_asr'] = compute_accuracy(retrained_model, self.attack_eval_dataset)
-        
+            result['random_reset_asr'] = compute_accuracy(random_reset_model, self.attack_eval_dataset)
+            result['random_retrained_asr'] = compute_accuracy(random_retrained_model, self.attack_eval_dataset)
+
         if 'unlearning_accuracy' in test_params_dict['tests'] and self.unlearning_eval_dataset:
             logging.info("Computing Unlearning Accuracy on poisoned data...")
             try:
@@ -276,6 +302,8 @@ class Test:
                 result['benchmark_unlearning_accuracy'] = self.benchmark_unlearning_accuracy
             result['reset_unlearning_accuracy'] = compute_accuracy(reset_model, self.unlearning_eval_dataset)
             result['retrained_unlearning_accuracy'] = compute_accuracy(retrained_model, self.unlearning_eval_dataset)
+            result['random_reset_unlearning_accuracy'] = compute_accuracy(random_reset_model, self.unlearning_eval_dataset)
+            result['random_retrained_unlearning_accuracy'] = compute_accuracy(random_retrained_model, self.unlearning_eval_dataset)
 
         if 'mia' in test_params_dict['tests']:
             logging.info("Running MIA...")
@@ -293,6 +321,8 @@ class Test:
 
                 result[f'reset_mia_{classifier_type}'] = mia_attack(reset_model, self.target_dataset, self.test_dataset, classifier_type)
                 result[f'retrained_mia_{classifier_type}'] = mia_attack(retrained_model, self.target_dataset, self.test_dataset, classifier_type)
+                result[f'random_reset_mia_{classifier_type}'] = mia_attack(random_reset_model, self.target_dataset, self.test_dataset, classifier_type)
+                result[f'random_retrained_mia_{classifier_type}'] = mia_attack(random_retrained_model, self.target_dataset, self.test_dataset, classifier_type)
 
         return result
     
@@ -714,37 +744,35 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
 
 if __name__ == "__main__":
     init_params_dict : InitParamsDict = {
-        'test_name': 'test_info',
+        'test_name': 'test_remove',
 
         'dataset_name': 'mnist',
-        'num_clients': 10,
+        'num_clients': 5,
         'num_classes': 10,                # Number of classes in the dataset
-        'distribution_type': 'categorical',     # Distribution type
+        'distribution_type': 'random',     # Distribution type
 
         'model_name': 'simple_cnn',       # Model architecture
         'loss_name': 'cross_entropy',     # Loss function
 
         'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 4,                # Initial training epochs
+        'train_epochs': 0,                # Initial training epochs
 
         'use_FIM' : False,
         'info_use_converter': False,
 
         'target_client': 0,               # Client to unlearn
         'num_tests': 1,                   # Number of independent repetitions
-        'hessian_method': 'diag_hessian',      # Hessian method
-        'poison' : True,
     }
 
     test_params_dict : TestParamsDict = {
             'subtest': 0,
             'unlearning_method': 'information',
-            'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'categorical_accuracies', 'mia'],
+            'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
 
-    percentages = np.arange(5, 5, 5)
+    percentages = np.arange(5, 10, 5)
     test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts[i]['unlearning_percentage'] = percentage
