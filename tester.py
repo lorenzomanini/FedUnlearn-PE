@@ -102,7 +102,8 @@ class TestParamsDict(TypedDict):
 
 
 class Test:
-    def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict={}, attack_eval_dataset=None, unlearning_eval_dataset=None):
+    def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, 
+                 init_params_dict={}, attack_eval_dataset=None, unlearning_eval_dataset=None):
 
         # Initialize parameters
         self.train_dataset = train_dataset
@@ -149,7 +150,6 @@ class Test:
 
     def run_test(self, test_params_dict):
 
-        # Apply unlearning method
         unlearning_method = test_params_dict['unlearning_method']
         unlearning_percentage = test_params_dict['unlearning_percentage']
         retrain_epochs = test_params_dict['retrain_epochs']
@@ -273,7 +273,7 @@ class Test:
                 self.trained_unlearning_accuracy = compute_accuracy(self.trained_model, self.unlearning_eval_dataset)
                 self.benchmark_unlearning_accuracy = compute_accuracy(self.benchmark_model, self.unlearning_eval_dataset)
                 result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
-                result['benchmark_asr_accuracy'] = self.benchmark_unlearning_accuracy
+                result['benchmark_unlearning_accuracy'] = self.benchmark_unlearning_accuracy
             result['reset_unlearning_accuracy'] = compute_accuracy(reset_model, self.unlearning_eval_dataset)
             result['retrained_unlearning_accuracy'] = compute_accuracy(retrained_model, self.unlearning_eval_dataset)
 
@@ -555,6 +555,7 @@ def run_tests_iter(iter, arg):
     test_params_dicts = arg['test_params_dicts']
     attack_eval_dataset = arg['attack_eval_dataset']
     unlearning_eval_dataset = arg['unlearning_eval_dataset']
+    save_models = arg['save_models']
 
     test_iter_path = os.path.join(test_path, f"test_{iter}")
     os.makedirs(test_iter_path)
@@ -573,11 +574,12 @@ def run_tests_iter(iter, arg):
 
     test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict, attack_eval_dataset, unlearning_eval_dataset)
     
-    torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
-    torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
+    if save_models:
+        torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
+        torch.save(test_instance.benchmark_model.cpu().state_dict(), benchmark_model_path)
 
-    with open(client_information_path, 'wb') as f:
-        pickle.dump(test_instance.client_information, f)
+        with open(client_information_path, 'wb') as f:
+            pickle.dump(test_instance.client_information, f)
 
     iteration_results = []
     errors = []
@@ -598,7 +600,7 @@ def run_tests_iter(iter, arg):
     return errors
 
 
-def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=1, devices=None):
+def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=1, devices=None, save_models=False):
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -667,7 +669,8 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
         'init_params_dict': init_params_dict,
         'test_params_dicts': test_params_dicts,
         'attack_eval_dataset': attack_eval_dataset,
-        'unlearning_eval_dataset': unlearning_eval_dataset
+        'unlearning_eval_dataset': unlearning_eval_dataset,
+        'save_models' : save_models
     }
 
     if num_workers == 1:
