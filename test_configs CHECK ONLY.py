@@ -3,10 +3,10 @@ from tester import run_repeated_tests, InitParamsDict, TestParamsDict
 
 if __name__ == "__main__":
 
-    save_path = '.\stat_tests'
+    save_path = '.\stat_tests\CHECK_ONLY'
 
-    num_tests = 20
-    num_workers = 8
+    num_tests = 1
+    num_workers = 1
 
     # MNIST random
 
@@ -22,7 +22,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 5,
+        'train_epochs': 0,
 
         'target_client': 0,
         'num_tests': num_tests
@@ -33,7 +33,7 @@ if __name__ == "__main__":
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -46,7 +46,7 @@ if __name__ == "__main__":
             'unlearning_method': 'parameters',
             'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         } 
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
@@ -73,7 +73,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 5,
+        'train_epochs': 0,
 
         'target_client': 0,
         'num_tests': num_tests
@@ -83,7 +83,7 @@ if __name__ == "__main__":
             'subtest': 0,
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -95,7 +95,7 @@ if __name__ == "__main__":
             'subtest': 1,
             'unlearning_method': 'parameters',
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         } 
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
@@ -122,7 +122,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 40,
+        'train_epochs': 0,
 
         'target_client': 0,
         'num_tests': num_tests
@@ -133,7 +133,7 @@ if __name__ == "__main__":
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -146,7 +146,7 @@ if __name__ == "__main__":
             'unlearning_method': 'parameters',
             'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         } 
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
@@ -173,7 +173,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 40,
+        'train_epochs': 0,
 
         'target_client': 0,
         'num_tests': num_tests
@@ -183,7 +183,7 @@ if __name__ == "__main__":
             'subtest': 0,
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -195,7 +195,7 @@ if __name__ == "__main__":
             'subtest': 1,
             'unlearning_method': 'parameters',
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         } 
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
@@ -222,7 +222,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 40,
+        'train_epochs': 0,
 
         'target_client': 0,
         'num_tests': num_tests
@@ -233,7 +233,7 @@ if __name__ == "__main__":
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -246,7 +246,7 @@ if __name__ == "__main__":
             'unlearning_method': 'parameters',
             'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         } 
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
@@ -273,7 +273,7 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 40,
+        'train_epochs': 0,
 
         'target_client': 0,
         'num_tests': num_tests
@@ -283,7 +283,7 @@ if __name__ == "__main__":
             'subtest': 0,
             'unlearning_method': 'information',
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -295,7 +295,7 @@ if __name__ == "__main__":
             'subtest': 1,
             'unlearning_method': 'parameters',
             'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
@@ -319,7 +319,7 @@ if __name__ == "__main__":
         'model_name': 'simple_cnn',
         'loss_name': 'cross_entropy',
         'trainer_name': 'sgd',
-        'train_epochs': 4,
+        'train_epochs': 0,
         'target_client': 0,
         'num_tests': num_tests,
         'poison' : True,
@@ -331,7 +331,7 @@ if __name__ == "__main__":
             'unlearning_method': 'information',
             'tests': ['attack_success_rate', 'unlearning_accuracy'], 
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 90, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
@@ -343,7 +343,7 @@ if __name__ == "__main__":
             'unlearning_method': 'parameters',
             'tests': ['attack_success_rate', 'unlearning_accuracy'],
             'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 1
+            'retrain_epochs': 0
         }
     percentages = np.arange(5, 50, 5)
     test_params_dicts_1 = [test_params_dict_1.copy() for _ in range(len(percentages))]
