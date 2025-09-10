@@ -59,7 +59,8 @@ if __name__ == "__main__":
         'train_epochs': 0,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
@@ -90,7 +91,8 @@ if __name__ == "__main__":
         'train_epochs': 0,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
@@ -120,7 +122,8 @@ if __name__ == "__main__":
         'train_epochs': 0,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
@@ -151,7 +154,8 @@ if __name__ == "__main__":
         'train_epochs': 0,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
@@ -180,7 +184,8 @@ if __name__ == "__main__":
         'train_epochs': 0,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
@@ -211,7 +216,8 @@ if __name__ == "__main__":
         'train_epochs': 0,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
@@ -239,7 +245,8 @@ if __name__ == "__main__":
         'target_client': 0,
         'num_tests': num_tests,
         'poison' : True,
-        'target_label': 9 
+        'target_label': 9,
+        'hessian_method': 'random'
     }
 
     test_params_dict: TestParamsDict = {

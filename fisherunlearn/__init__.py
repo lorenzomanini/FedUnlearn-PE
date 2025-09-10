@@ -183,6 +183,11 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
                 diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=DEVICE)
             elif method == 'diag_ggn_mc':
                 diag_h = compute_diag_ggn_mc(model, criterion, inputs, targets, device=DEVICE)
+            elif method == 'random':
+                diag_h = {}
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        diag_h[name] = torch.rand_like(param)
             else:
                 raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
 
