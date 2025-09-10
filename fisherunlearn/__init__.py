@@ -272,10 +272,12 @@ def find_informative_params(information, method, percentage, whitelist=None, bla
             sorted_layer_info=np.sort(layer_info.flatten())[::-1]
             cumulative_sum = np.cumsum(sorted_layer_info)
             threshold_idx = np.argmin(np.abs(cumulative_sum - cumulative_sum[-1] * percentage / 100))
+            threshold_idx = min(threshold_idx, len(sorted_layer_info)-1)
             thresholds[name] = sorted_layer_info[threshold_idx]
         elif method == 'parameters':
             sorted_layer_info=np.sort(layer_info.flatten())[::-1]
             threshold_idx = int(len(sorted_layer_info) / 100 * percentage)
+            threshold_idx = min(threshold_idx, len(sorted_layer_info)-1)
             thresholds[name] = sorted_layer_info[threshold_idx]
         elif method == 'random':
             layer = torch.zeros_like(layer_info)
