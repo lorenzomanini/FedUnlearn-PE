@@ -228,16 +228,21 @@ if __name__ == "__main__":
 
     init_params_dict: InitParamsDict = {
         'test_name': 'POISON_PAPER',
+
         'dataset_name': 'mnist',
         'num_clients': 5,
         'num_classes': 10,
         'distribution_type': 'random',
+
         'model_name': 'simple_cnn',
         'loss_name': 'cross_entropy',
+
         'trainer_name': 'sgd',
-        'train_epochs': 4,
+        'train_epochs': 5,
+
         'target_client': 0,
         'num_tests': num_tests,
+        
         'poison' : True,
         'target_label': 9 
     }
