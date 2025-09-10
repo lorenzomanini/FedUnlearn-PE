@@ -37,7 +37,7 @@ def generate_params_ranges(test_params_dict):
 
 if __name__ == "__main__":
 
-    save_path = '.\stat_tests'
+    save_path = '.\stat_tests\CHECK ONLY'
 
     num_tests = 1
     num_workers = 1

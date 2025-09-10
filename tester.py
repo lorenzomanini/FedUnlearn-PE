@@ -9,6 +9,7 @@ import pickle
 import random
 import logging
 import functools
+import sys, traceback
 
 import torch
 from torch import nn
@@ -618,9 +619,12 @@ def run_tests_iter(iter, arg):
             test_result = test_instance.run_test(test_params_dict)
             iteration_results.append(test_result)
         except Exception as e:
-            logging.error(f"Error in test iteration {iter}: {e}")
-            iteration_results.append({'error': str(e)})
+            logging.error(f"Error in test {i} of iteration {iter}: {str(e)}")
+            traceback_str = ''.join(traceback.format_tb(e.__traceback__))
+            logging.error(f"Traceback:\n{traceback_str}")
             errors.append(i)
+            iteration_results.append({'error': str(e)})
+            
         with open(test_results_path, 'wb') as f:
             pickle.dump(iteration_results, f)
 
