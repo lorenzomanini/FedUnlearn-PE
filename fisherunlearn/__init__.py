@@ -268,30 +268,34 @@ def find_informative_params(information, method, percentage, whitelist=None, bla
     informative_params = {}
     thresholds = {}
 
-    for name, layer_info in information.items():
-        if whitelist is not None and name not in whitelist:
-            continue
-        if blacklist is not None and name in blacklist:
-            continue
-        if method == 'information':
-            sorted_layer_info=np.sort(layer_info.flatten())[::-1]
-            cumulative_sum = np.cumsum(sorted_layer_info)
-            threshold_idx = np.argmin(np.abs(cumulative_sum - cumulative_sum[-1] * percentage / 100))
-            threshold_idx = min(threshold_idx, len(sorted_layer_info)-1)
-            thresholds[name] = sorted_layer_info[threshold_idx]
-        elif method == 'parameters':
-            sorted_layer_info=np.sort(layer_info.flatten())[::-1]
-            threshold_idx = int(len(sorted_layer_info) / 100 * percentage)
-            threshold_idx = min(threshold_idx, len(sorted_layer_info)-1)
-            thresholds[name] = sorted_layer_info[threshold_idx]
-        elif method == 'random':
+    if method == 'random':
+        random_information = {}
+        for name, layer_info in information.items():
             layer = torch.zeros_like(layer_info)
             flat_view = layer.view(-1)
             flat_view[torch.randperm(flat_view.numel())[:int(flat_view.numel() * percentage / 100)]] = 1
             thresholds[name] = 0.5
-            information[name] = layer
-        else:
-            raise ValueError("Invalid method. Use 'information' or 'parameters'.")
+            random_information[name] = layer
+        information = random_information
+    else:
+        for name, layer_info in information.items():
+            if whitelist is not None and name not in whitelist:
+                continue
+            if blacklist is not None and name in blacklist:
+                continue
+            if method == 'information':
+                sorted_layer_info=np.sort(layer_info.flatten())[::-1]
+                cumulative_sum = np.cumsum(sorted_layer_info)
+                threshold_idx = np.argmin(np.abs(cumulative_sum - cumulative_sum[-1] * percentage / 100))
+                threshold_idx = min(threshold_idx, len(sorted_layer_info)-1)
+                thresholds[name] = sorted_layer_info[threshold_idx]
+            elif method == 'parameters':
+                sorted_layer_info=np.sort(layer_info.flatten())[::-1]
+                threshold_idx = int(len(sorted_layer_info) / 100 * percentage)
+                threshold_idx = min(threshold_idx, len(sorted_layer_info)-1)
+                thresholds[name] = sorted_layer_info[threshold_idx]
+            else:
+                raise ValueError("Invalid method. Use 'information' or 'parameters'.")
     
         if graph:
             plt.figure(figsize=(10, 5))
