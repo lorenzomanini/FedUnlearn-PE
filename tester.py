@@ -166,33 +166,41 @@ class Test:
             if indices_tensor is not None and indices_tensor.numel() > 0: 
                  num_reset_params += indices_tensor.shape[0]
 
-        reset_model = self.model_class()
-        reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params)
-        reset_model.load_state_dict(reset_state_dict)
+        if num_reset_params != 0:
+            reset_model = self.model_class()
+            reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params)
+            reset_model.load_state_dict(reset_state_dict)
 
-        retrainer = UnlearnNet(reset_model, informative_params) 
-        self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
-        retrained_model = self.model_class()
-        retrained_model.load_state_dict(retrainer.get_retrained_params())
+            retrainer = UnlearnNet(reset_model, informative_params) 
+            self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
+            retrained_model = self.model_class()
+            retrained_model.load_state_dict(retrainer.get_retrained_params())
 
-        self.reset_params_percentage = num_reset_params / self.num_total_params * 100
-        random_params = find_informative_params(self.client_information, 'random', self.reset_params_percentage, whitelist, blacklist)
+            reset_params_percentage = num_reset_params / self.num_total_params * 100
+            random_params = find_informative_params(self.client_information, 'random', reset_params_percentage, whitelist, blacklist)
 
-        random_reset_model = self.model_class()
-        random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params)
-        random_reset_model.load_state_dict(random_reset_state_dict)
+            random_reset_model = self.model_class()
+            random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params)
+            random_reset_model.load_state_dict(random_reset_state_dict)
 
-        random_retrainer = UnlearnNet(random_reset_model, random_params)
-        self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
-        random_retrained_model = self.model_class()
-        random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
+            random_retrainer = UnlearnNet(random_reset_model, random_params)
+            self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
+            random_retrained_model = self.model_class()
+            random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
+        else:
+            logging.warning("No parameters to reset, skipping unlearning and retraining.")
+            reset_model = self.trained_model
+            retrained_model = self.trained_model
+            random_reset_model = self.trained_model
+            random_retrained_model = self.trained_model
+            reset_params_percentage = 0.0
 
         # Execute tests
         result = {}
 
         result['num_total_params'] = self.num_total_params
         result['num_reset_params'] = num_reset_params
-        result['reset_params_percentage'] = self.reset_params_percentage
+        result['reset_params_percentage'] = reset_params_percentage
 
         if 'test_accuracy' in test_params_dict['tests']:
             logging.info("Computing test accuracies...")
@@ -747,43 +755,44 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
 
 
 if __name__ == "__main__":
+    save_path = '.\stat_tests\CHECK ONLY'
+
+    num_tests = 1
+    num_workers = 1
+
     init_params_dict : InitParamsDict = {
-        'test_name': 'test_remove',
+        'test_name': 'MNIST_random_PAPER',
 
         'dataset_name': 'mnist',
         'num_clients': 5,
-        'num_classes': 10,                # Number of classes in the dataset
-        'distribution_type': 'random',     # Distribution type
+        'num_classes': 10,
+        'distribution_type': 'random',
 
-        'model_name': 'simple_cnn',       # Model architecture
-        'loss_name': 'cross_entropy',     # Loss function
+        'model_name': 'simple_cnn',
+        'loss_name': 'cross_entropy',
 
-        'trainer_name': 'sgd',            # Trainer type
-        'train_epochs': 0,                # Initial training epochs
+        'trainer_name': 'sgd',
+        'train_epochs': 0,
 
-        'use_FIM' : False,
-        'info_use_converter': False,
-
-        'target_client': 0,               # Client to unlearn
-        'num_tests': 1,                   # Number of independent repetitions
+        'target_client': 0,
+        'num_tests': num_tests,
+        'hessian_method': 'random'
     }
 
     test_params_dict : TestParamsDict = {
-            'subtest': 0,
-            'unlearning_method': 'information',
-            'tests': ['test_accuracy', 'target_accuracy', 'clients_accuracies', 'class_accuracies', 'mia'],
-            'mia_classifier_types': ['nn', 'logistic'],
-            'retrain_epochs': 0
+            'tests': ['test_accuracy'],
+            'retrain_epochs': 1
         }
-
-    percentages = np.arange(5, 10, 5)
-    test_params_dicts = [test_params_dict.copy() for _ in range(len(percentages))]
-    for i, percentage in enumerate(percentages):
-        test_params_dicts[i]['unlearning_percentage'] = percentage
-
     
+    test_params_dict_0 = test_params_dict.copy()
+    test_params_dict_0['subtest'] = 0
+    test_params_dict_0['unlearning_method'] = 'information'
 
-    save_path = './stat_tests'
+    percentages = np.arange(0, 10, 5)
+    test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
+    for i, percentage in enumerate(percentages):
+        test_params_dicts_0[i]['unlearning_percentage'] = percentage
 
-    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=2, devices=[torch.device("cpu"), torch.device("cuda")])
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path)
+    test_params_dicts = test_params_dicts_0
+
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
