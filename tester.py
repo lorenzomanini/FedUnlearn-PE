@@ -460,7 +460,7 @@ def get_clients_subsets(dataset, init_params_dict):
         return split_dataset_by_class_distribution(dataset, class_distribution)
 
     elif distribution_type == 'dirichlet':
-        alpha = 1
+        alpha = init_params_dict.get('dirichlet_alpha', 1)
         class_distribution = np.random.dirichlet([alpha] * num_classes, num_clients)
         return split_dataset_by_class_distribution(dataset, class_distribution)
 

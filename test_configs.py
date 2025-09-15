@@ -33,14 +33,15 @@ def generate_params_ranges(test_params_dict):
         test_params_dicts_2[i]['unlearning_percentage'] = percentage
 
 
-    return test_params_dicts_0 + test_params_dicts_1 + test_params_dicts_2
+    return test_params_dicts_0 + test_params_dicts_2
 
 if __name__ == "__main__":
 
-    save_path = '.\stat_tests'
+    save_path = './stat_tests/MC'
 
-    num_tests = 20
-    num_workers = 8
+    num_tests = 10
+    num_workers = 5
+    hessian_method = 'diag_ggn_mc'
 
     # MNIST random
 
@@ -59,7 +60,8 @@ if __name__ == "__main__":
         'train_epochs': 5,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
     }
 
     test_params_dict : TestParamsDict = {
@@ -70,7 +72,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # MNIST preferential
@@ -90,7 +92,8 @@ if __name__ == "__main__":
         'train_epochs': 5,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
     }
 
     test_params_dict : TestParamsDict = {
@@ -100,7 +103,7 @@ if __name__ == "__main__":
     
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 random
@@ -120,7 +123,8 @@ if __name__ == "__main__":
         'train_epochs': 40,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
     }
 
     test_params_dict : TestParamsDict = {
@@ -131,7 +135,7 @@ if __name__ == "__main__":
 
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 preferential
@@ -151,7 +155,8 @@ if __name__ == "__main__":
         'train_epochs': 40,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
     }
 
     test_params_dict : TestParamsDict = {
@@ -180,7 +185,8 @@ if __name__ == "__main__":
         'train_epochs': 40,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
     }
 
     test_params_dict : TestParamsDict = {
@@ -191,7 +197,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST preferential
@@ -211,7 +217,8 @@ if __name__ == "__main__":
         'train_epochs': 40,
 
         'target_client': 0,
-        'num_tests': num_tests
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
     }
 
     test_params_dict : TestParamsDict = {
@@ -244,7 +251,8 @@ if __name__ == "__main__":
         'num_tests': num_tests,
         
         'poison' : True,
-        'target_label': 9 
+        'target_label': 9,
+        'hessian_method': hessian_method
     }
 
     test_params_dict: TestParamsDict = {
