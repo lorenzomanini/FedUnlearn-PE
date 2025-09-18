@@ -120,22 +120,31 @@ def poisoning_data(clients_subsets, init_params_dict):
 
     poisoned_images_for_eval = []
 
+    all_images = [underlying_dataset[i][0] for i in range(len(underlying_dataset))]
+    all_labels = [underlying_dataset[i][1] for i in range(len(underlying_dataset))]
+
     for i, local_idx in enumerate(local_indices_to_poison):
         global_dataset_idx = target_subset.indices[local_idx]
         
-        poisoned_image_np = np.transpose(poisoned_data_np[i], (2, 0, 1))
-        new_image_tensor = torch.tensor(poisoned_image_np, dtype=torch.float32)
+        new_image_tensor = torch.tensor(
+            np.transpose(poisoned_data_np[i], (2, 0, 1)), dtype=torch.float
+        )
+
         new_label = int(np.argmax(poisoned_labels_np[i]))
 
-        if hasattr(underlying_dataset, 'data') and hasattr(underlying_dataset, 'targets'):
-            underlying_dataset.data[global_dataset_idx] = new_image_tensor
-            underlying_dataset.targets[global_dataset_idx] = new_label
-        elif hasattr(underlying_dataset, 'samples'):
-            underlying_dataset.samples[global_dataset_idx] = (new_image_tensor, new_label)
-        else:
-            underlying_dataset[global_dataset_idx] = (new_image_tensor, new_label)
+        # Visualize the new image tensor
+        # import matplotlib.pyplot as plt
+        # plt.imshow(new_image_tensor.permute(1, 2, 0))
+        # plt.title(f"Poisoned Label: {new_label}")
+        # plt.show()
+
+        all_images[global_dataset_idx] = new_image_tensor
+        all_labels[global_dataset_idx] = new_label
 
         poisoned_images_for_eval.append(new_image_tensor)
+
+    for client_subset in clients_subsets:
+        client_subset.dataset = TensorDataset(torch.stack(all_images), torch.tensor(all_labels))
 
     true_labels_tensor = torch.tensor(true_labels_of_poisoned_samples, dtype=torch.long)
     unlearning_eval_dataset = TensorDataset(torch.stack(poisoned_images_for_eval), true_labels_tensor)

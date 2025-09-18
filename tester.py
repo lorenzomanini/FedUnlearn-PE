@@ -104,7 +104,7 @@ class TestParamsDict(TypedDict):
 
 class Test:
     def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, 
-                 init_params_dict={}, attack_eval_dataset=None, unlearning_eval_dataset=None):
+                 init_params_dict={}, poisoned_backdoor_dataset=None, clean_backdoor_dataset=None):
 
         # Initialize parameters
         self.train_dataset = train_dataset
@@ -118,8 +118,8 @@ class Test:
         self.classes_datasets = split_dataset_by_class_distribution(self.test_dataset, np.identity(init_params_dict['num_classes']))
         self.categorical_test_datasets = [subset for i, subset in enumerate(self.classes_datasets) if i != self.target_client]
 
-        self.attack_eval_dataset = attack_eval_dataset
-        self.unlearning_eval_dataset = unlearning_eval_dataset
+        self.poisoned_backdoor_dataset = poisoned_backdoor_dataset
+        self.clean_backdoor_dataset = clean_backdoor_dataset
 
         self.model_class = model_class
         self.loss_class = loss_class
@@ -267,52 +267,36 @@ class Test:
             result['random_reset_class_accuracies'] = [compute_accuracy(random_reset_model, subset) for subset in self.classes_datasets]
             result['random_retrained_class_accuracies'] = [compute_accuracy(random_retrained_model, subset) for subset in self.classes_datasets]
 
-        if 'categorical_accuracies' in test_params_dict['tests']:
-            logging.info("Computing Categorical accuracies...")
+        if 'poisoned_backdoor_accuracy' in test_params_dict['tests'] and self.poisoned_backdoor_dataset:
+            logging.info("Computing Poisoned Backdoor Accuracy...")
             try:
-                result['trained_cat_accuracy'] = self.trained_cat_accuracy
-                result['benchmark_cat_accuracy'] = self.benchmark_cat_accuracy
+                result['trained_poisoned_backdoor_accuracy'] = self.trained_poisoned_backdoor_accuracy
+                result['benchmark_poisoned_backdoor_accuracy'] = self.benchmark_poisoned_backdoor_accuracy
             except AttributeError:
-                self.trained_cat_accuracy = compute_accuracy(self.trained_model, self.categorical_test_datasets)
-                self.benchmark_cat_accuracy = compute_accuracy(self.benchmark_model, self.categorical_test_datasets)
-                result['trained_cat_accuracy'] = self.trained_cat_accuracy
-                result['benchmark_cat_accuracy'] = self.benchmark_cat_accuracy
-            
-            result['reset_test_accuracy'] = compute_accuracy(reset_model, self.categorical_test_datasets)
-            result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.categorical_test_datasets)
-            result['random_reset_test_accuracy'] = compute_accuracy(random_reset_model, self.categorical_test_datasets)
-            result['random_retrained_test_accuracy'] = compute_accuracy(random_retrained_model, self.categorical_test_datasets)
+                self.trained_poisoned_backdoor_accuracy = compute_accuracy(self.trained_model, self.poisoned_backdoor_dataset)
+                self.benchmark_poisoned_backdoor_accuracy = compute_accuracy(self.benchmark_model, self.poisoned_backdoor_dataset)
+                result['trained_poisoned_backdoor_accuracy'] = self.trained_poisoned_backdoor_accuracy
+                result['benchmark_poisoned_backdoor_accuracy'] = self.benchmark_poisoned_backdoor_accuracy
 
-        if 'attack_success_rate' in test_params_dict['tests'] and self.attack_eval_dataset:
-            logging.info("Computing Attack Success Rate (ASR)...")
-            try:
-                result['trained_asr'] = self.trained_asr_accuracy
-                result['benchmark_asr'] = self.benchmark_asr_accuracy
-            except AttributeError:
-                self.trained_asr_accuracy = compute_accuracy(self.trained_model, self.attack_eval_dataset)
-                self.benchmark_asr_accuracy = compute_accuracy(self.benchmark_model, self.attack_eval_dataset)
-                result['trained_asr'] = self.trained_asr_accuracy
-                result['benchmark_asr'] = self.benchmark_asr_accuracy
-                
-            result['reset_asr'] = compute_accuracy(reset_model, self.attack_eval_dataset)
-            result['retrained_asr'] = compute_accuracy(retrained_model, self.attack_eval_dataset)
-            result['random_reset_asr'] = compute_accuracy(random_reset_model, self.attack_eval_dataset)
-            result['random_retrained_asr'] = compute_accuracy(random_retrained_model, self.attack_eval_dataset)
+            result['reset_poisoned_backdoor_accuracy'] = compute_accuracy(reset_model, self.poisoned_backdoor_dataset)
+            result['retrained_poisoned_backdoor_accuracy'] = compute_accuracy(retrained_model, self.poisoned_backdoor_dataset)
+            result['random_reset_poisoned_backdoor_accuracy'] = compute_accuracy(random_reset_model, self.poisoned_backdoor_dataset)
+            result['random_retrained_poisoned_backdoor_accuracy'] = compute_accuracy(random_retrained_model, self.poisoned_backdoor_dataset)
 
-        if 'unlearning_accuracy' in test_params_dict['tests'] and self.unlearning_eval_dataset:
-            logging.info("Computing Unlearning Accuracy on poisoned data...")
+        if 'clean_backdoor_accuracy' in test_params_dict['tests'] and self.clean_backdoor_dataset:
+            logging.info("Computing Clean Backdoor Accuracy...")
             try:
-                result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
-                result['benchmark_asr_accuracy'] = self.benchmark_asr_accuracy
+                result['trained_clean_backdoor_accuracy'] = self.trained_clean_backdoor_accuracy
+                result['benchmark_clean_backdoor_accuracy'] = self.benchmark_clean_backdoor_accuracy
             except AttributeError:
-                self.trained_unlearning_accuracy = compute_accuracy(self.trained_model, self.unlearning_eval_dataset)
-                self.benchmark_unlearning_accuracy = compute_accuracy(self.benchmark_model, self.unlearning_eval_dataset)
-                result['trained_unlearning_accuracy'] = self.trained_unlearning_accuracy
-                result['benchmark_unlearning_accuracy'] = self.benchmark_unlearning_accuracy
-            result['reset_unlearning_accuracy'] = compute_accuracy(reset_model, self.unlearning_eval_dataset)
-            result['retrained_unlearning_accuracy'] = compute_accuracy(retrained_model, self.unlearning_eval_dataset)
-            result['random_reset_unlearning_accuracy'] = compute_accuracy(random_reset_model, self.unlearning_eval_dataset)
-            result['random_retrained_unlearning_accuracy'] = compute_accuracy(random_retrained_model, self.unlearning_eval_dataset)
+                self.trained_clean_backdoor_accuracy = compute_accuracy(self.trained_model, self.clean_backdoor_dataset)
+                self.benchmark_clean_backdoor_accuracy = compute_accuracy(self.benchmark_model, self.clean_backdoor_dataset)
+                result['trained_clean_backdoor_accuracy'] = self.trained_clean_backdoor_accuracy
+                result['benchmark_clean_backdoor_accuracy'] = self.benchmark_clean_backdoor_accuracy
+            result['reset_clean_backdoor_accuracy'] = compute_accuracy(reset_model, self.clean_backdoor_dataset)
+            result['retrained_clean_backdoor_accuracy'] = compute_accuracy(retrained_model, self.clean_backdoor_dataset)
+            result['random_reset_clean_backdoor_accuracy'] = compute_accuracy(random_reset_model, self.clean_backdoor_dataset)
+            result['random_retrained_clean_backdoor_accuracy'] = compute_accuracy(random_retrained_model, self.clean_backdoor_dataset)
 
         if 'mia' in test_params_dict['tests']:
             logging.info("Running MIA...")
@@ -549,26 +533,27 @@ def get_loss_class(init_params_dict):
         raise ValueError("Unsupported loss name")
     
 def simple_trainer(model, loss_fn, subsets, epochs):
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            model.train()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.train()
 
-            dataloader = DataLoader(concatenate_subsets(subsets), TRAIN_BATCH_SIZE, shuffle=True)
-            model.to(device)
-            optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
-                loss = None
-                for inputs, targets in dataloader:
-                    inputs, targets = inputs.to(device), targets.to(device)
+    dataloader = DataLoader(concatenate_subsets(subsets), TRAIN_BATCH_SIZE, shuffle=True)
+    model.to(device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
 
-                    optimizer.zero_grad()
-                    outputs = model(inputs)
-                    loss = loss_fn(outputs, targets) 
-                    loss.backward()
-                    optimizer.step()
-                logging.info(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+    for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
+        loss = None
+        for inputs, targets in dataloader:
+            inputs, targets = inputs.to(device), targets.to(device)
 
-            model.eval()
-            return model.cpu()
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = loss_fn(outputs, targets) 
+            loss.backward()
+            optimizer.step()
+        logging.info(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+
+    model.eval()
+    return model.cpu()
 
 def get_trainer_function(init_params_dict):
     trainer_name = init_params_dict['trainer_name']
@@ -592,8 +577,8 @@ def run_tests_iter(iter, arg):
     trainer_function = arg['trainer_function']
     init_params_dict = arg['init_params_dict']
     test_params_dicts = arg['test_params_dicts']
-    attack_eval_dataset = arg['attack_eval_dataset']
-    unlearning_eval_dataset = arg['unlearning_eval_dataset']
+    poisoned_backdoor_dataset = arg['poisoned_backdoor_dataset']
+    clean_backdoor_dataset = arg['clean_backdoor_dataset']
     save_models = arg['save_models']
 
     test_iter_path = os.path.join(test_path, f"test_{iter}")
@@ -611,7 +596,7 @@ def run_tests_iter(iter, arg):
     client_information_path = os.path.join(test_iter_path, "client_information.pkl")
     test_results_path = os.path.join(test_iter_path, "test_results.pkl")
 
-    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict, attack_eval_dataset, unlearning_eval_dataset)
+    test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict, poisoned_backdoor_dataset, clean_backdoor_dataset)
     
     if save_models:
         torch.save(test_instance.trained_model.cpu().state_dict(), trained_model_path)
@@ -685,12 +670,12 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
     loss_class = get_loss_class(init_params_dict) 
     trainer_function = get_trainer_function(init_params_dict)
 
-    attack_eval_dataset = None
-    unlearning_eval_dataset = None
+    poisoned_backdoor_dataset = None
+    clean_backdoor_dataset = None
     
     if init_params_dict.get('poison', False):
         logging.info("Poisoning is enabled. Applying backdoor attack...")
-        clients_subsets, attack_eval_dataset, unlearning_eval_dataset = create_poisoned_data(clients_subsets, init_params_dict)
+        clients_subsets, poisoned_backdoor_dataset, clean_backdoor_dataset = create_poisoned_data(clients_subsets, init_params_dict)
         logging.info("Poisoning complete.")
     else:
         logging.info("Poisoning is disabled.")
@@ -710,8 +695,8 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
         'trainer_function': trainer_function,
         'init_params_dict': init_params_dict,
         'test_params_dicts': test_params_dicts,
-        'attack_eval_dataset': attack_eval_dataset,
-        'unlearning_eval_dataset': unlearning_eval_dataset,
+        'poisoned_backdoor_dataset': poisoned_backdoor_dataset,
+        'clean_backdoor_dataset': clean_backdoor_dataset,
         'save_models' : save_models
     }
 
