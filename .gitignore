@@ -9,3 +9,4 @@ fisherunlearn/__pycache__/*
 sessions/*
 stat_tests/*
 resource_tests/*
+plots/*

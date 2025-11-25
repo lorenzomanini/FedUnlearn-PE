@@ -27,20 +27,20 @@ def generate_params_ranges(test_params_dict):
     test_params_dict_2['subtest'] = 2
     test_params_dict_2['unlearning_method'] = 'parameters'
 
-    percentages = [100]
+    percentages = [10]
     test_params_dicts_2 = [test_params_dict_2.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_2[i]['unlearning_percentage'] = percentage
 
 
-    return test_params_dicts_0 + test_params_dicts_2
+    return test_params_dicts_2
 
 if __name__ == "__main__":
 
-    save_path = './stat_tests/MC'
+    save_path = './stat_tests/TEST'
 
-    num_tests = 10
-    num_workers = 5
+    num_tests = 1
+    num_workers = 1
     hessian_method = 'diag_ggn_mc'
 
     # MNIST random
@@ -165,7 +165,7 @@ if __name__ == "__main__":
         }
     
     test_params_dicts = generate_params_ranges(test_params_dict)
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST random
@@ -228,7 +228,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # POISON ATTACK
@@ -236,12 +236,12 @@ if __name__ == "__main__":
     init_params_dict: InitParamsDict = {
         'test_name': 'POISON_PAPER',
 
-        'dataset_name': 'mnist',
+        'dataset_name': 'cifar10',
         'num_clients': 5,
         'num_classes': 10,
         'distribution_type': 'random',
 
-        'model_name': 'simple_cnn',
+        'model_name': 'resnet18',
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
@@ -256,8 +256,7 @@ if __name__ == "__main__":
     }
 
     test_params_dict: TestParamsDict = {
-            'tests': ['attack_success_rate', 'unlearning_accuracy'], 
-            'mia_classifier_types': ['nn', 'logistic'],
+            'tests': ['poisoned_backdoor_accuracy', 'clean_backdoor_accuracy'],
             'retrain_epochs': 1
         }
 
