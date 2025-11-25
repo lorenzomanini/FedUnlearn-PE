@@ -65,8 +65,9 @@ def compute_accuracy(model, dataset):
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
+            _, correct_labels = torch.max(labels.data, 1)
             total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+            correct += (predicted == correct_labels).sum().item()
             tqdm_bar.update(1)
     
     tqdm_bar.close()
@@ -323,7 +324,23 @@ def get_datasets(init_params_dict):
 
     dataset_name = init_params_dict['dataset_name']
     model_name = init_params_dict['model_name']
-    if dataset_name == 'mnist':
+    if dataset_name == 'breast_cancer':
+        from BreastCancerDataset import BreastCancerDataset
+
+        file_path = "data\Data4.xlsx"
+        config = {'Age recode with <1 year olds and 90+': {'encoding': 'int_embedding', 'data_type': 'input'}, 'Year of diagnosis': {'encoding': 'int_embedding', 'data_type': 'input'}, 'Race and origin recode (NHW, NHB, NHAIAN, NHAPI, Hispanic)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Grade Recode (thru 2017)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Laterality': {'encoding': 'one_hot', 'data_type': 'input'}, 'Summary stage 2000 (1998-2017)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Marital status at diagnosis': {'encoding': 'one_hot', 'data_type': 'input'}, 'Rural-Urban Continuum Code': {
+        'encoding': 'one_hot', 'data_type': 'input'}, 'ER Status Recode Breast Cancer (1990+)': {'encoding': 'one_hot', 'data_type': 'input'}, 'PR Status Recode Breast Cancer (1990+)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Chemotherapy recode (yes, no/unk)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Radiation recode': {'encoding': 'one_hot', 'data_type': 'input'}, 'Median household income inflation adj to 2022': {'encoding': 'int_embedding', 'data_type': 'input'}, 'Outcome': {'encoding': 'one_hot', 'data_type': 'target'}}
+
+        nrows = init_params_dict.get('nrows', None)
+        train_dataset = BreastCancerDataset(file_path, config=config, nrows=nrows)
+        test_dataset = train_dataset
+        input_dim = train_dataset.dataset.shape[1]
+        num_classes = train_dataset.targets.shape[1]
+        init_params_dict['num_classes'] = num_classes
+        init_params_dict['input_dim'] = input_dim
+
+
+    elif dataset_name == 'mnist':
         from torchvision.datasets import MNIST
         from torchvision import transforms
 
@@ -502,6 +519,29 @@ class FLNet2(nn.Sequential):
             nn.Linear(512, 43)
         )
 
+class FeedForwardNN(nn.Sequential):
+    def __init__(self, input_size, num_classes):
+        dim_step = input_size // 4
+        hidden_sizes = [input_size - dim_step, input_size - 2 * dim_step, input_size - 3 * dim_step]
+
+        super(FeedForwardNN, self).__init__(
+            # nn.Linear(input_size, input_size),
+            # nn.ReLU(),
+            nn.Linear(input_size, hidden_sizes[0]),
+            nn.ReLU(),
+            # nn.Linear(hidden_sizes[0], hidden_sizes[0]),
+            # nn.ReLU(),
+            nn.Linear(hidden_sizes[0], hidden_sizes[1]),
+            nn.ReLU(),
+            # nn.Linear(hidden_sizes[1], hidden_sizes[1]),
+            # nn.ReLU(),
+            nn.Linear(hidden_sizes[1], hidden_sizes[2]),
+            nn.ReLU(),
+            # nn.Linear(hidden_sizes[2], hidden_sizes[2]),
+            # nn.ReLU(),
+            nn.Linear(hidden_sizes[2], num_classes)
+        )
+
 def create_resnet(init_params_dict):
     num_classes = init_params_dict['num_classes']
     model = resnet18(num_classes=num_classes) 
@@ -520,6 +560,11 @@ def get_model_class(init_params_dict):
     elif model_name == 'complex_cnn':
         init_params_dict['info_use_converter'] = False
         return FLNet2
+    elif model_name == 'feedforward_nn':
+        input_dim = init_params_dict['input_dim']
+        num_classes = init_params_dict['num_classes']
+        init_params_dict['info_use_converter'] = False
+        return functools.partial(FeedForwardNN, input_size=input_dim, num_classes=num_classes)
     else:
         raise ValueError(f"Unsupported model name: {model_name}") 
 
@@ -536,12 +581,30 @@ def simple_trainer(model, loss_fn, subsets, epochs):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
 
-    dataloader = DataLoader(concatenate_subsets(subsets), TRAIN_BATCH_SIZE, shuffle=True)
+    dataset = concatenate_subsets(subsets)
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [int(0.9 * len(dataset)), len(dataset) - int(0.9 * len(dataset))])
+
+    dataloader = DataLoader(train_dataset, TRAIN_BATCH_SIZE, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, EVAL_BATCH_SIZE, shuffle=False)
     model.to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=1e-3,
+    weight_decay=1e-2,   # you can try 1e-3 if this feels too strong
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode="min",       # or "max" if you're tracking accuracy
+    factor=0.5,
+    patience=3,
+    verbose=True
+    )
 
     for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
         loss = None
+        loss_accum = 0.0
+        n_batches = 0
         for inputs, targets in dataloader:
             inputs, targets = inputs.to(device), targets.to(device)
 
@@ -550,7 +613,19 @@ def simple_trainer(model, loss_fn, subsets, epochs):
             loss = loss_fn(outputs, targets) 
             loss.backward()
             optimizer.step()
-        logging.info(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item()}")
+            loss_accum += loss.item()
+            n_batches += 1
+        val_loss_accum = 0.0
+        val_n_batches = 0
+        for val_inputs, val_targets in val_dataloader:
+            val_inputs, val_targets = val_inputs.to(device), val_targets.to(device)
+            with torch.no_grad():
+                val_outputs = model(val_inputs)
+                val_loss = loss_fn(val_outputs, val_targets)
+                val_loss_accum += val_loss.item()
+                val_n_batches += 1
+        scheduler.step(val_loss_accum / val_n_batches)
+        logging.info(f"Epoch {epoch+1}/{epochs}, Loss: {loss_accum / n_batches}, Val Loss: {val_loss_accum / val_n_batches}")
 
     model.eval()
     return model.cpu()
@@ -746,18 +821,18 @@ if __name__ == "__main__":
     num_workers = 1
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'MNIST_random_PAPER',
+        'test_name': 'Breast_Cancer_Unlearning_Information_Method',
 
-        'dataset_name': 'mnist',
+        'dataset_name': 'breast_cancer',
+        'nrows': 100,
         'num_clients': 5,
-        'num_classes': 10,
         'distribution_type': 'random',
 
-        'model_name': 'simple_cnn',
+        'model_name': 'feedforward_nn',
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 0,
+        'train_epochs': 100,
 
         'target_client': 0,
         'num_tests': num_tests,

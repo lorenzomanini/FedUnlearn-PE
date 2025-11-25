@@ -10,15 +10,19 @@ def split_dataset_by_class_distribution(dataset, class_distributions):
 
     for dist in class_distributions:
         assert np.isclose(np.sum(dist), 1.0), "Class distribution must sum to 1."
-
-    if hasattr(dataset, 'targets'):
+    if hasattr(dataset, 'targets_classes'):
+        targets = np.array(dataset.targets_classes)
+    elif hasattr(dataset, 'targets'):
         targets = np.array(dataset.targets)
     elif hasattr(dataset, '_samples'):
         targets = np.array([s[1] for s in dataset._samples])
+    else:
+        raise ValueError("Dataset must have 'targets' attribute or '_samples' attribute.")
 
     num_classes = len(class_distributions[0])
     num_clients = len(class_distributions)
 
+    different_targets = set(targets)
     class_indices = defaultdict(list)
     for idx, label in enumerate(targets):
         class_indices[label].append(idx)
