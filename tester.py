@@ -26,10 +26,10 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from typing import TypedDict, Literal
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-EVAL_BATCH_SIZE = 32
-TRAIN_BATCH_SIZE = 32
-INFO_BATCH_SIZE = 15
-MIA_BATCH_SIZE = 128
+EVAL_BATCH_SIZE = 5000
+TRAIN_BATCH_SIZE = 5000
+INFO_BATCH_SIZE = 1000
+MIA_BATCH_SIZE = 1000
 
 fisherunlearn.set_device(DEVICE)
 fisherunlearn.set_info_batch_size(INFO_BATCH_SIZE)
@@ -65,9 +65,8 @@ def compute_accuracy(model, dataset):
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
-            _, correct_labels = torch.max(labels.data, 1)
             total += labels.size(0)
-            correct += (predicted == correct_labels).sum().item()
+            correct += (predicted == labels).sum().item()
             tqdm_bar.update(1)
     
     tqdm_bar.close()
@@ -327,15 +326,10 @@ def get_datasets(init_params_dict):
     if dataset_name == 'breast_cancer':
         from BreastCancerDataset import BreastCancerDataset
 
-        file_path = "data\Data4.xlsx"
-        config = {'Age recode with <1 year olds and 90+': {'encoding': 'int_embedding', 'data_type': 'input'}, 'Year of diagnosis': {'encoding': 'int_embedding', 'data_type': 'input'}, 'Race and origin recode (NHW, NHB, NHAIAN, NHAPI, Hispanic)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Grade Recode (thru 2017)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Laterality': {'encoding': 'one_hot', 'data_type': 'input'}, 'Summary stage 2000 (1998-2017)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Marital status at diagnosis': {'encoding': 'one_hot', 'data_type': 'input'}, 'Rural-Urban Continuum Code': {
-        'encoding': 'one_hot', 'data_type': 'input'}, 'ER Status Recode Breast Cancer (1990+)': {'encoding': 'one_hot', 'data_type': 'input'}, 'PR Status Recode Breast Cancer (1990+)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Chemotherapy recode (yes, no/unk)': {'encoding': 'one_hot', 'data_type': 'input'}, 'Radiation recode': {'encoding': 'one_hot', 'data_type': 'input'}, 'Median household income inflation adj to 2022': {'encoding': 'int_embedding', 'data_type': 'input'}, 'Outcome': {'encoding': 'one_hot', 'data_type': 'target'}}
-
-        nrows = init_params_dict.get('nrows', None)
-        train_dataset = BreastCancerDataset(file_path, config=config, nrows=nrows)
-        test_dataset = train_dataset
-        input_dim = train_dataset.dataset.shape[1]
-        num_classes = train_dataset.targets.shape[1]
+        train_dataset = BreastCancerDataset('./data', split='train')
+        test_dataset = BreastCancerDataset('./data', split='test')
+        input_dim = len(train_dataset.input_columns)
+        num_classes = len(train_dataset.classes)
         init_params_dict['num_classes'] = num_classes
         init_params_dict['input_dim'] = input_dim
 
@@ -469,6 +463,11 @@ def get_clients_subsets(dataset, init_params_dict):
         lengths = [1 / num_clients] * num_clients
         return torch.utils.data.random_split(dataset, lengths)
 
+    elif distribution_type == 'BC_targeted':
+        from BreastCancerDataset import BreastCancerDataset, split_by_age
+        if not isinstance(dataset, BreastCancerDataset):
+            raise ValueError("BC_targeted distribution can only be used with BreastCancerDataset")
+        return split_by_age(dataset)
     else:
         raise ValueError("Unsupported distribution type")
 
@@ -610,7 +609,7 @@ def simple_trainer(model, loss_fn, subsets, epochs):
 
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = loss_fn(outputs, targets) 
+            loss = loss_fn(outputs, targets)
             loss.backward()
             optimizer.step()
             loss_accum += loss.item()
@@ -826,13 +825,13 @@ if __name__ == "__main__":
         'dataset_name': 'breast_cancer',
         'nrows': 100,
         'num_clients': 5,
-        'distribution_type': 'random',
+        'distribution_type': 'BC_targeted',
 
         'model_name': 'feedforward_nn',
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 100,
+        'train_epochs': 20,
 
         'target_client': 0,
         'num_tests': num_tests,
