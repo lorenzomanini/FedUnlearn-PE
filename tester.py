@@ -50,6 +50,65 @@ def set_batch_sizes(info_batch_size=INFO_BATCH_SIZE, mia_batch_size=MIA_BATCH_SI
     fisherunlearn.set_mia_batch_size(mia_batch_size)
 
 
+class CommunicationTracker:
+    """
+    Tracks communication efficiency metrics for federated learning.
+    
+    Metrics tracked:
+    - Total communication rounds
+    - Uplink bytes per client (client -> server model updates or Hessian/Gradient)
+    - Downlink bytes per client (server -> client model broadcasts)
+    - Total uplink/downlink bytes
+    
+    Note: For Diagonal Hessian/GGN, the size is equal to the model parameters.
+    """
+    
+    def __init__(self, num_clients: int, model: nn.Module):
+        self.num_clients = num_clients
+        self.communication_rounds = 0
+        
+        # Calculate model size in bytes (float32 = 4 bytes per param)
+        self.model_size_bytes = sum(p.numel() * 4 for p in model.parameters())
+        self.num_parameters = sum(p.numel() for p in model.parameters())
+        
+        # Per-client tracking
+        self.uplink_bytes_per_client = [0] * num_clients
+        self.downlink_bytes_per_client = [0] * num_clients
+        
+    def record_round(self, participating_clients: list = None):
+        """Record a single communication round."""
+        self.communication_rounds += 1
+        
+        if participating_clients is None:
+            participating_clients = list(range(self.num_clients))
+        
+        for client_id in participating_clients:
+            # Uplink: client sends local model/gradients to server
+            self.uplink_bytes_per_client[client_id] += self.model_size_bytes
+            # Downlink: server sends aggregated model to client
+            self.downlink_bytes_per_client[client_id] += self.model_size_bytes
+    
+    def get_metrics(self) -> dict:
+        """Return all communication metrics as a dictionary."""
+        return {
+            'communication_rounds': self.communication_rounds,
+            'num_parameters': self.num_parameters,
+            'model_size_bytes': self.model_size_bytes,
+            'uplink_bytes_per_client': self.uplink_bytes_per_client.copy(),
+            'downlink_bytes_per_client': self.downlink_bytes_per_client.copy(),
+            'total_uplink_bytes': sum(self.uplink_bytes_per_client),
+            'total_downlink_bytes': sum(self.downlink_bytes_per_client),
+            'total_communication_bytes': sum(self.uplink_bytes_per_client) + sum(self.downlink_bytes_per_client),
+            'avg_uplink_bytes_per_client': sum(self.uplink_bytes_per_client) / self.num_clients if self.num_clients > 0 else 0,
+            'avg_downlink_bytes_per_client': sum(self.downlink_bytes_per_client) / self.num_clients if self.num_clients > 0 else 0,
+        }
+    
+    def __repr__(self):
+        metrics = self.get_metrics()
+        return (f"CommunicationTracker(rounds={metrics['communication_rounds']}, "
+                f"total_bytes={metrics['total_communication_bytes']:,})")
+
+
 def compute_accuracy(model, dataset):
     dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
 
@@ -90,6 +149,9 @@ class InitParamsDict(TypedDict):
     use_FIM: bool
     hessian_method: Literal['diag_hessian', 'diag_ggn', 'diag_ggn_mc']
     poison: bool
+    local_epochs: int
+    participation_rate: float
+    lr: float
 
 class TestParamsDict(TypedDict):
     subtest: int
@@ -133,13 +195,22 @@ class Test:
         self.benchmark_model = None
         self.client_information = None
 
+        # Initialize communication trackers
+        self.initial_training_comm_tracker = CommunicationTracker(len(self.clients_datasets), self.model_class())
+        self.benchmark_training_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
 
         logging.info("Training model...") 
-        self.trained_model = self.trainer_function(self.model_class(), self.loss_class(), self.clients_datasets, self.train_epochs)
+        self.trained_model = self.trainer_function(
+            self.model_class(), self.loss_class(), self.clients_datasets, 
+            self.train_epochs, comm_tracker=self.initial_training_comm_tracker
+        )
         self.num_total_params = sum(p.numel() for p in self.trained_model.parameters())
 
         logging.info("Training benchmark model...") 
-        self.benchmark_model = self.trainer_function(self.model_class(), self.loss_class(), self.benchmark_datasets, self.train_epochs)
+        self.benchmark_model = self.trainer_function(
+            self.model_class(), self.loss_class(), self.benchmark_datasets, 
+            self.train_epochs, comm_tracker=self.benchmark_training_comm_tracker
+        )
 
         logging.info("Computing information...")
         hessian_method = init_params_dict.get('hessian_method', 'diag_ggn')
@@ -148,6 +219,10 @@ class Test:
             self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method, use_FIM=True)
         else:
             self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method)
+        
+        # Record Hessian computation communication (Downlink: Model, Uplink: Diagonal Hessian per client)
+        # Diagonal Hessian has the same size as the model parameters.
+        self.initial_training_comm_tracker.record_round()
 
 
     def run_test(self, test_params_dict):
@@ -166,13 +241,17 @@ class Test:
             if indices_tensor is not None and indices_tensor.numel() > 0: 
                  num_reset_params += indices_tensor.shape[0]
 
+        # Initialize communication trackers for retraining
+        retrain_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
+        random_retrain_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
+
         if num_reset_params != 0:
             reset_model = self.model_class()
             reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params)
             reset_model.load_state_dict(reset_state_dict)
 
             retrainer = UnlearnNet(reset_model, informative_params) 
-            self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
+            self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs, comm_tracker=retrain_comm_tracker)
             retrained_model = self.model_class()
             retrained_model.load_state_dict(retrainer.get_retrained_params())
 
@@ -184,7 +263,7 @@ class Test:
             random_reset_model.load_state_dict(random_reset_state_dict)
 
             random_retrainer = UnlearnNet(random_reset_model, random_params)
-            self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs)
+            self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs, comm_tracker=random_retrain_comm_tracker)
             random_retrained_model = self.model_class()
             random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
         else:
@@ -201,6 +280,31 @@ class Test:
         result['num_total_params'] = self.num_total_params
         result['num_reset_params'] = num_reset_params
         result['reset_params_percentage'] = reset_params_percentage
+
+        # Add communication metrics to results
+        initial_comm = self.initial_training_comm_tracker.get_metrics()
+        benchmark_comm = self.benchmark_training_comm_tracker.get_metrics()
+        retrain_comm = retrain_comm_tracker.get_metrics()
+        random_retrain_comm = random_retrain_comm_tracker.get_metrics()
+        
+        result['communication_metrics'] = {
+            'initial_training': initial_comm,
+            'benchmark_training': benchmark_comm,
+            'unlearning_retraining': retrain_comm,
+            'random_baseline_retraining': random_retrain_comm,
+        }
+        
+        # Summary communication metrics for easy access
+        result['total_communication_rounds'] = initial_comm['communication_rounds'] + retrain_comm['communication_rounds']
+        result['total_communication_bytes'] = initial_comm['total_communication_bytes'] + retrain_comm['total_communication_bytes']
+        result['benchmark_communication_rounds'] = benchmark_comm['communication_rounds']
+        result['benchmark_communication_bytes'] = benchmark_comm['total_communication_bytes']
+        
+        # Per-phase breakdown
+        result['initial_training_rounds'] = initial_comm['communication_rounds']
+        result['initial_training_bytes'] = initial_comm['total_communication_bytes']
+        result['retraining_rounds'] = retrain_comm['communication_rounds']
+        result['retraining_bytes'] = retrain_comm['total_communication_bytes']
 
         if 'test_accuracy' in test_params_dict['tests']:
             logging.info("Computing test accuracies...")
@@ -576,7 +680,7 @@ def get_loss_class(init_params_dict):
     else:
         raise ValueError("Unsupported loss name")
     
-def simple_trainer(model, loss_fn, subsets, epochs):
+def simple_trainer(model, loss_fn, subsets, epochs, comm_tracker=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
 
@@ -601,6 +705,10 @@ def simple_trainer(model, loss_fn, subsets, epochs):
     )
 
     for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
+        # Record communication round (all clients participate each epoch)
+        if comm_tracker is not None:
+            comm_tracker.record_round()
+        
         loss = None
         loss_accum = 0.0
         n_batches = 0
@@ -629,10 +737,90 @@ def simple_trainer(model, loss_fn, subsets, epochs):
     model.eval()
     return model.cpu()
 
+def fedavg_trainer(model, loss_fn, subsets, epochs, comm_tracker=None, init_params_dict=None):
+    """
+    Federated Averaging Trainer.
+    
+    Args:
+        model: Global model
+        loss_fn: Loss function
+        subsets: List of client datasets
+        epochs: Number of global communication rounds
+        comm_tracker: CommunicationTracker instance
+        init_params_dict: Dictionary containing 'local_epochs', 'participation_rate', 'lr'
+    """
+    import copy
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    local_epochs = init_params_dict.get('local_epochs', 1) if init_params_dict else 1
+    participation_rate = init_params_dict.get('participation_rate', 1.0) if init_params_dict else 1.0
+    lr = init_params_dict.get('lr', 1e-3) if init_params_dict else 1e-3
+    
+    num_clients = len(subsets)
+    num_participating = max(1, int(participation_rate * num_clients))
+    
+    model.to(device)
+    
+    for round in tqdm(range(epochs), desc="FedAvg Rounds", unit="round", leave=False):
+        # 1. Select participating clients
+        participating_idxs = np.random.choice(num_clients, num_participating, replace=False)
+        
+        # 2. Record communication
+        if comm_tracker:
+            comm_tracker.record_round(participating_idxs)
+            
+        # 3. Client Training
+        local_weights = []
+        local_sizes = []
+        
+        global_state = model.state_dict()
+        
+        for client_idx in participating_idxs:
+            # Init local model with global weights
+            client_model = copy.deepcopy(model) # Optimization: reuse instance if possible, but deepcopy is safer
+            client_model.load_state_dict(global_state)
+            client_model.train()
+            
+            # Local Optimizer
+            optimizer = torch.optim.AdamW(client_model.parameters(), lr=lr, weight_decay=1e-2)
+            
+            # Local Data
+            train_loader = DataLoader(subsets[client_idx], batch_size=TRAIN_BATCH_SIZE, shuffle=True)
+            
+            # Local Epochs
+            for _ in range(local_epochs):
+                for inputs, targets in train_loader:
+                    inputs, targets = inputs.to(device), targets.to(device)
+                    optimizer.zero_grad()
+                    outputs = client_model(inputs)
+                    loss = loss_fn(outputs, targets)
+                    loss.backward()
+                    optimizer.step()
+            
+            local_weights.append(client_model.state_dict())
+            local_sizes.append(len(subsets[client_idx]))
+            
+        # 4. Aggregation (FedAvg)
+        total_size = sum(local_sizes)
+        avg_weights = copy.deepcopy(local_weights[0])
+        
+        for key in avg_weights.keys():
+            avg_weights[key] = avg_weights[key] * local_sizes[0]
+            for i in range(1, len(local_weights)):
+                avg_weights[key] += local_weights[i][key] * local_sizes[i]
+            avg_weights[key] = torch.div(avg_weights[key], total_size)
+            
+        model.load_state_dict(avg_weights)
+        
+    return model.cpu()
+
 def get_trainer_function(init_params_dict):
     trainer_name = init_params_dict['trainer_name']
     if trainer_name == 'sgd':
         return simple_trainer
+    elif trainer_name == 'fedavg':
+        return functools.partial(fedavg_trainer, init_params_dict=init_params_dict)
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
 
@@ -820,22 +1008,24 @@ if __name__ == "__main__":
     num_workers = 1
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'Breast_Cancer_Unlearning_Information_Method',
+        'test_name': 'CIFAR10_FedAvg_Test',
 
-        'dataset_name': 'breast_cancer',
-        'nrows': 100,
+        'dataset_name': 'cifar10',
         'num_clients': 5,
-        'distribution_type': 'BC_targeted',
+        'distribution_type': 'random',
 
-        'model_name': 'feedforward_nn',
+        'model_name': 'resnet18',
         'loss_name': 'cross_entropy',
 
-        'trainer_name': 'sgd',
+        'trainer_name': 'fedavg',
         'train_epochs': 20,
+        'local_epochs': 2,
+        'participation_rate': 1.0,
+        'lr': 1e-3,
 
         'target_client': 0,
         'num_tests': num_tests,
-        'hessian_method': 'random'
+        'hessian_method': 'diag_ggn_mc'
     }
 
     test_params_dict : TestParamsDict = {
