@@ -231,6 +231,67 @@ if __name__ == "__main__":
     #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
+    # CIFAR100 random
+
+    init_params_dict : InitParamsDict = {
+        'test_name': 'CIFAR100_random_PAPER',
+
+        'dataset_name': 'cifar100',
+        'num_clients': 5,
+        'num_classes': 100,
+        'distribution_type': 'random',
+
+        'model_name': 'resnet18',
+        'loss_name': 'cross_entropy',
+
+        'trainer_name': 'sgd',
+        'train_epochs': 40,
+
+        'target_client': 0,
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
+    }
+
+    test_params_dict : TestParamsDict = {
+            'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
+            'mia_classifier_types': ['nn', 'logistic'],
+            'retrain_epochs': 1
+        }
+
+    test_params_dicts = generate_params_ranges(test_params_dict)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+
+
+    # CIFAR100 preferential
+
+    init_params_dict : InitParamsDict = {
+        'test_name': 'CIFAR100_pref_PAPER',
+
+        'dataset_name': 'cifar100',
+        'num_clients': 5,
+        'num_classes': 100,
+        'distribution_type': 'preferential_class',
+
+        'model_name': 'resnet18',
+        'loss_name': 'cross_entropy',
+
+        'trainer_name': 'sgd',
+        'train_epochs': 40,
+
+        'target_client': 0,
+        'num_tests': num_tests,
+        'hessian_method': hessian_method
+    }
+
+    test_params_dict : TestParamsDict = {
+            'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
+            'retrain_epochs': 1
+        }
+
+    test_params_dicts = generate_params_ranges(test_params_dict)
+    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+
+
     # POISON ATTACK
 
     init_params_dict: InitParamsDict = {
