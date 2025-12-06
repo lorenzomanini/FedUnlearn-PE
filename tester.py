@@ -690,19 +690,19 @@ def simple_trainer(model, loss_fn, subsets, epochs, comm_tracker=None):
     dataloader = DataLoader(train_dataset, TRAIN_BATCH_SIZE, shuffle=True)
     val_dataloader = DataLoader(val_dataset, EVAL_BATCH_SIZE, shuffle=False)
     model.to(device)
-    #optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    optimizer = torch.optim.AdamW(
-    model.parameters(),
-    lr=1e-3,
-    weight_decay=1e-2,   # you can try 1e-3 if this feels too strong
-    )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer,
-    mode="min",       # or "max" if you're tracking accuracy
-    factor=0.5,
-    patience=3,
-    verbose=True
-    )
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    #optimizer = torch.optim.AdamW(
+    #model.parameters(),
+    #lr=1e-3,
+    #weight_decay=1e-2,   # you can try 1e-3 if this feels too strong
+    #)
+    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #optimizer,
+    #mode="min",       # or "max" if you're tracking accuracy
+    #factor=0.5,
+    #patience=3,
+    #verbose=True
+    #)
 
     for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
         # Record communication round (all clients participate each epoch)
