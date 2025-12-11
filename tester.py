@@ -76,7 +76,7 @@ class CommunicationTracker:
         self.downlink_bytes_per_client = [0] * num_clients
         
     def record_round(self, participating_clients: list = None):
-        """Record a single communication round."""
+        """Record a single communication round (Uplink + Downlink)."""
         self.communication_rounds += 1
         
         if participating_clients is None:
@@ -86,6 +86,18 @@ class CommunicationTracker:
             # Uplink: client sends local model/gradients to server
             self.uplink_bytes_per_client[client_id] += self.model_size_bytes
             # Downlink: server sends aggregated model to client
+            self.downlink_bytes_per_client[client_id] += self.model_size_bytes
+
+    def record_downlink(self, participating_clients: list = None):
+        """Record a downlink-only communication (Server -> Clients)."""
+        # We count this as a round technically, or at least a communication event
+        self.communication_rounds += 1
+        
+        if participating_clients is None:
+            participating_clients = list(range(self.num_clients))
+            
+        for client_id in participating_clients:
+            # Downlink: server sends model to client
             self.downlink_bytes_per_client[client_id] += self.model_size_bytes
     
     def get_metrics(self) -> dict:
@@ -198,6 +210,8 @@ class Test:
         # Initialize communication trackers
         self.initial_training_comm_tracker = CommunicationTracker(len(self.clients_datasets), self.model_class())
         self.benchmark_training_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
+        # Tracker for unlearning phase ONLY (Hessian exchange)
+        self.unlearning_comm_tracker = CommunicationTracker(len(self.clients_datasets), self.model_class())
 
         logging.info("Training model...") 
         self.trained_model = self.trainer_function(
@@ -220,9 +234,10 @@ class Test:
         else:
             self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method)
         
-        # Record Hessian computation communication (Downlink: Model, Uplink: Diagonal Hessian per client)
+        # Record Hessian computation communication on the UNLEARNING tracker
+        # (Downlink: Model, Uplink: Diagonal Hessian per client)
         # Diagonal Hessian has the same size as the model parameters.
-        self.initial_training_comm_tracker.record_round()
+        self.unlearning_comm_tracker.record_round()
 
 
     def run_test(self, test_params_dict):
@@ -249,6 +264,10 @@ class Test:
             reset_model = self.model_class()
             reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params)
             reset_model.load_state_dict(reset_state_dict)
+
+            # Record the broadcast of the reset model to clients (Server -> Clients)
+            # This is the "receive the new model with the reset parameters" part.
+            self.unlearning_comm_tracker.record_downlink()
 
             retrainer = UnlearnNet(reset_model, informative_params) 
             self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs, comm_tracker=retrain_comm_tracker)
@@ -284,27 +303,37 @@ class Test:
         # Add communication metrics to results
         initial_comm = self.initial_training_comm_tracker.get_metrics()
         benchmark_comm = self.benchmark_training_comm_tracker.get_metrics()
+        unlearning_hessian_comm = self.unlearning_comm_tracker.get_metrics()
         retrain_comm = retrain_comm_tracker.get_metrics()
         random_retrain_comm = random_retrain_comm_tracker.get_metrics()
         
         result['communication_metrics'] = {
             'initial_training': initial_comm,
             'benchmark_training': benchmark_comm,
+            'unlearning_hessian': unlearning_hessian_comm,
             'unlearning_retraining': retrain_comm,
             'random_baseline_retraining': random_retrain_comm,
         }
         
-        # Summary communication metrics for easy access
-        result['total_communication_rounds'] = initial_comm['communication_rounds'] + retrain_comm['communication_rounds']
-        result['total_communication_bytes'] = initial_comm['total_communication_bytes'] + retrain_comm['total_communication_bytes']
+        # Summary communication metrics for easy access (initial training + unlearning)
+        result['total_communication_rounds'] = initial_comm['communication_rounds'] + unlearning_hessian_comm['communication_rounds']
+        result['total_communication_bytes'] = initial_comm['total_communication_bytes'] + unlearning_hessian_comm['total_communication_bytes']
         result['benchmark_communication_rounds'] = benchmark_comm['communication_rounds']
         result['benchmark_communication_bytes'] = benchmark_comm['total_communication_bytes']
         
         # Per-phase breakdown
         result['initial_training_rounds'] = initial_comm['communication_rounds']
         result['initial_training_bytes'] = initial_comm['total_communication_bytes']
-        result['retraining_rounds'] = retrain_comm['communication_rounds']
-        result['retraining_bytes'] = retrain_comm['total_communication_bytes']
+        
+        # UNLEARNING ONLY metrics (Hessian exchange + Reset Model Broadcast)
+        # Note: We explicitly EXCLUDE the retraining cost here as requested.
+        result['unlearning_hessian_rounds'] = unlearning_hessian_comm['communication_rounds']
+        result['unlearning_hessian_bytes'] = unlearning_hessian_comm['total_communication_bytes']
+        result['unlearning_retraining_rounds'] = retrain_comm['communication_rounds']
+        result['unlearning_retraining_bytes'] = retrain_comm['total_communication_bytes']
+        
+        result['unlearning_total_rounds'] = unlearning_hessian_comm['communication_rounds']
+        result['unlearning_total_bytes'] = unlearning_hessian_comm['total_communication_bytes']
 
         if 'test_accuracy' in test_params_dict['tests']:
             logging.info("Computing test accuracies...")
