@@ -228,11 +228,8 @@ class Test:
 
         logging.info("Computing information...")
         hessian_method = init_params_dict.get('hessian_method', 'diag_ggn')
-        if init_params_dict.get('use_FIM', False):
-            logging.info("Using FIM for information computation...")
-            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method, use_FIM=True)
-        else:
-            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, use_converter=self.info_use_converter, method=hessian_method)
+        stochastic_correction = init_params_dict.get('stochastic_correction', False)
+        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, stochastic_correction=stochastic_correction, use_converter=self.info_use_converter, method=hessian_method)
         
         # Record Hessian computation communication on the UNLEARNING tracker
         # (Downlink: Model, Uplink: Diagonal Hessian per client)
@@ -720,18 +717,6 @@ def simple_trainer(model, loss_fn, subsets, epochs, comm_tracker=None):
     val_dataloader = DataLoader(val_dataset, EVAL_BATCH_SIZE, shuffle=False)
     model.to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-    #optimizer = torch.optim.AdamW(
-    #model.parameters(),
-    #lr=1e-3,
-    #weight_decay=1e-2,   # you can try 1e-3 if this feels too strong
-    #)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #optimizer,
-    #mode="min",       # or "max" if you're tracking accuracy
-    #factor=0.5,
-    #patience=3,
-    #verbose=True
-    #)
 
     for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):
         # Record communication round (all clients participate each epoch)
@@ -760,7 +745,6 @@ def simple_trainer(model, loss_fn, subsets, epochs, comm_tracker=None):
                 val_loss = loss_fn(val_outputs, val_targets)
                 val_loss_accum += val_loss.item()
                 val_n_batches += 1
-        scheduler.step(val_loss_accum / val_n_batches)
         logging.info(f"Epoch {epoch+1}/{epochs}, Loss: {loss_accum / n_batches}, Val Loss: {val_loss_accum / val_n_batches}")
 
     model.eval()

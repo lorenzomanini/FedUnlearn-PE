@@ -35,129 +35,29 @@ def set_mia_batch_size(batch_size):
     MIA_BATCH_SIZE = batch_size
 
 
-def compute_diag_hessian(model, criterion, inputs, targets, device='cpu'):
-    inputs = inputs.to(device)
-    targets = targets.to(device)
-
-    model.zero_grad()
-    outputs = model(inputs)
-    loss = criterion(outputs, targets)
-
-    with backpack(DiagHessian()):
-        loss.backward()
-
-    diag_hessian_params = {}
-    for name, param in model.named_parameters():
-        if hasattr(param, 'diag_h') and param.requires_grad:
-            diag_hessian_params[name] = param.diag_h.clone().detach()
-            # Cleanup to avoid leftover references
-            del param.diag_h
-
-    return diag_hessian_params
-
-def compute_diag_ggn(model, criterion, inputs, targets, device='cpu'):
-    inputs = inputs.to(device)
-    targets = targets.to(device)
-
-    model.zero_grad()
-    outputs = model(inputs)
-    loss = criterion(outputs, targets)
-
-    with backpack(DiagGGNExact()):
-        loss.backward()
-
-    diag_hessian_params = {}
-    for name, param in model.named_parameters():
-        if hasattr(param, 'diag_ggn_exact') and param.requires_grad:
-            diag_hessian_params[name] = param.diag_ggn_exact.clone().detach()
-            # Cleanup to avoid leftover references
-            del param.diag_ggn_exact
-
-    return diag_hessian_params
-
-def compute_diag_ggn_mc(model, criterion, inputs, targets, device='cpu'):
-    inputs = inputs.to(device)
-    targets = targets.to(device)
-
-    model.zero_grad()
-    outputs = model(inputs)
-    loss = criterion(outputs, targets)
-
-    with backpack(DiagGGNMC()):
-        loss.backward()
-
-    diag_hessian_params = {}
-    for name, param in model.named_parameters():
-        if hasattr(param, 'diag_ggn_mc') and param.requires_grad:
-            diag_hessian_params[name] = param.diag_ggn_mc.clone().detach()
-            # Cleanup to avoid leftover references
-            del param.diag_ggn_mc
-
-    return diag_hessian_params
-
-def compute_informations(model, criterion, dataloader_list, method='diag_ggn', use_converter=False, use_FIM=False):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = copy.deepcopy(model).to(device).eval()
-    criterion = copy.deepcopy(criterion).to(device)
-    
-    model = extend(model, use_converter=use_converter)
-    criterion = extend(criterion)
-
-    num_clients = len(dataloader_list)
-    clients_hessians = []
-
-    num_batches = sum(len(loader) for loader in dataloader_list)
-    tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch")    
-
-    for loader in dataloader_list:
-        client_hessian = {}
-        for inputs, targets in loader:
-            # Compute the diag Hessian for this batch
-            if method == 'diag_hessian':
-                diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=device)
-            elif method == 'diag_ggn':
-                diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=device)
-            elif method == 'diag_ggn_mc':
-                diag_h = compute_diag_ggn_mc(model, criterion, inputs, targets, device=device)
-            else:
-                raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
-
-            # Accumulate avarage over batches
-            for name, value in diag_h.items():
-                if name not in client_hessian:
-                    client_hessian[name] = value/(len(loader)*num_clients)
-                else:
-                    client_hessian[name] += value/(len(loader)*num_clients)
-                    
-            tqdm_bar.update(1)
-
-        clients_hessians.append(client_hessian)
-    
-    tqdm_bar.close()
-
-    total_hessian = {}
-    for name in clients_hessians[0].keys():
-        total_hessian[name] = sum(client_hessian[name] for client_hessian in clients_hessians)
-    
-    if use_FIM:
-        return clients_hessians
-    else:    
-        clients_informations = []
-        for client_idx in range(num_clients):
-            client_info = {}
-            for name in clients_hessians[client_idx].keys():
-                layer_info = 0.5 * torch.pow(clients_hessians[client_idx][name]/total_hessian[name], 2)
-                layer_info[total_hessian[name] == 0] = 0
-                client_info[name] = layer_info.detach().cpu()
-            clients_informations.append(client_info)
-        
-        return clients_informations
-
-
-def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', use_converter=True, use_FIM=False):
+def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', stochastic_correction=False, use_converter=True):
 
     global DEVICE
     global INFO_BATCH_SIZE
+
+    backpack_extension = None
+    backpack_parameter = None
+    
+    if method == 'diag_hessian': 
+        backpack_extension = DiagHessian()
+        backpack_parameter = 'diag_h'
+    elif method == 'diag_ggn':
+        backpack_extension = DiagGGNExact()
+        backpack_parameter = 'diag_ggn_exact'
+    elif method == 'diag_ggn_mc':
+        backpack_extension = DiagGGNMC()
+        backpack_parameter = 'diag_ggn_mc'
+    elif method == 'random':
+        if stochastic_correction:
+            raise ValueError("Stochastic correction not applicable for 'random' method.")
+        pass
+    else:
+        raise ValueError("Invalid method. Use 'diag_hessian', 'diag_ggn' or 'diag_ggn_mc'.")
 
     model = copy.deepcopy(model).to(DEVICE).eval()
     criterion = copy.deepcopy(criterion).to(DEVICE)
@@ -165,60 +65,93 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
     model = extend(model, use_converter=use_converter)
     criterion = extend(criterion)
 
-    num_clients = len(datasets_list)
-    target_client_hessian = {}
+    target_hessian = {}
     total_hessian = {}
+    target_gradients = {}
+    total_gradients = {}
 
-    dataloader_list = [DataLoader(dataset, INFO_BATCH_SIZE, shuffle=False) for dataset in datasets_list]
+    dataloader_list = [DataLoader(dataset, batch_size=INFO_BATCH_SIZE, shuffle=False) for dataset in datasets_list]
 
     num_batches = sum(len(loader) for loader in dataloader_list)
     tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch", leave=False)    
 
     for loader_idx, loader in enumerate(dataloader_list):
         for inputs, targets in loader:
-            # Compute the diag Hessian for this batch
-            if method == 'diag_hessian':
-                diag_h = compute_diag_hessian(model, criterion, inputs, targets, device=DEVICE)
-            elif method == 'diag_ggn':
-                diag_h = compute_diag_ggn(model, criterion, inputs, targets, device=DEVICE)
-            elif method == 'diag_ggn_mc':
-                diag_h = compute_diag_ggn_mc(model, criterion, inputs, targets, device=DEVICE)
-            elif method == 'random':
-                diag_h = {}
+            diag_h = {}
+            grad = {}
+
+            if method == 'random':
                 for name, param in model.named_parameters():
                     if param.requires_grad:
                         diag_h[name] = torch.rand_like(param)
             else:
-                raise ValueError("Invalid method. Use 'diag_hessian' or 'diag_ggn'.")
+                inputs = inputs.to(DEVICE)
+                targets = targets.to(DEVICE)
+
+                model.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+
+                with backpack(backpack_extension):
+                    loss.backward()
+
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        diag_h[name] = getattr(param, backpack_parameter).clone().detach()
+                        grad[name] = param.grad.clone().detach()
+                        # Cleanup to avoid leftover references
+                        delattr(param, backpack_parameter)
 
             for name, value in diag_h.items():
                 if name not in total_hessian:
-                    total_hessian[name] = value/(len(loader)*num_clients)
+                    total_hessian[name] = value*len(inputs)
                 else:
-                    total_hessian[name] += value/(len(loader)*num_clients)
+                    total_hessian[name] += value*len(inputs)
 
             if loader_idx == client_idx:
                 for name, value in diag_h.items():
-                    if name not in target_client_hessian:
-                        target_client_hessian[name] = value/(len(loader)*num_clients)
+                    if name not in target_hessian:
+                        target_hessian[name] = value*len(inputs)
                     else:
-                        target_client_hessian[name] += value/(len(loader)*num_clients)
+                        target_hessian[name] += value*len(inputs)
+
+            if stochastic_correction:
+                for name, value in grad.items():
+                    if loader_idx == client_idx:
+                        if name not in target_gradients:
+                            target_gradients[name] = []
+                        target_gradients[name].append(value*len(inputs))
+                    if name not in total_gradients:
+                        total_gradients[name] = []
+                    total_gradients[name].append(value*len(inputs))
             
             tqdm_bar.update(1)
     
     tqdm_bar.close()
 
-    if use_FIM:
-        target_client_hessian = {name: value.detach().cpu() for name, value in target_client_hessian.items()}
-        return target_client_hessian
-    else:
-        target_client_info = {}
-        for name in target_client_hessian.keys():
-            layer_info = 0.5 * torch.pow(target_client_hessian[name]/total_hessian[name], 2)
-            layer_info[total_hessian[name] == 0] = 0
-            target_client_info[name] = layer_info.detach().cpu()
-        
-        return target_client_info
+    target_client_info = {}
+
+    for name in target_hessian.keys():
+        if stochastic_correction:
+            target_grad = torch.stack(target_gradients[name], dim=0)
+            total_grad = torch.stack(total_gradients[name], dim=0)
+
+            target_var = torch.var(target_grad, dim=0, unbiased=True)
+            total_var = torch.var(total_grad, dim=0, unbiased=True)
+
+            target_ratio = target_var / target_hessian[name]
+            total_ratio = total_var / total_hessian[name]
+
+            correction = (total_ratio - target_ratio) / (1 + total_ratio)
+        else:
+            correction = torch.zeros_like(target_hessian[name])
+
+        layer_info= torch.pow(target_hessian[name]/total_hessian[name]*(1+correction), 2)
+        layer_info[total_hessian[name] <= 0] = 0
+        layer_info[target_hessian[name] <= 0] = 0
+        target_client_info[name] = layer_info.detach().cpu()
+    
+    return target_client_info
 
 def plot_information_parameters_tradeoff(information, method, whitelist=None, blacklist=None):
     percentages = np.arange(0,100,0.1)
