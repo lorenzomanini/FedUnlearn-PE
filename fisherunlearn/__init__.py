@@ -70,6 +70,14 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
     target_gradients = {}
     total_gradients = {}
 
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            target_hessian[name] = torch.zeros_like(param)
+            total_hessian[name] = torch.zeros_like(param)
+            if stochastic_correction:
+                target_gradients[name] = []
+                total_gradients[name] = []
+
     dataloader_list = [DataLoader(dataset, batch_size=INFO_BATCH_SIZE, shuffle=False) for dataset in datasets_list]
 
     num_batches = sum(len(loader) for loader in dataloader_list)
@@ -99,31 +107,18 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
                     if param.requires_grad:
                         diag_h[name] = getattr(param, backpack_parameter).clone().detach()
                         grad[name] = param.grad.clone().detach()
-                        # Cleanup to avoid leftover references
                         delattr(param, backpack_parameter)
 
             for name, value in diag_h.items():
-                if name not in total_hessian:
-                    total_hessian[name] = value*len(inputs)
-                else:
-                    total_hessian[name] += value*len(inputs)
-
-            if loader_idx == client_idx:
-                for name, value in diag_h.items():
-                    if name not in target_hessian:
-                        target_hessian[name] = value*len(inputs)
-                    else:
-                        target_hessian[name] += value*len(inputs)
+                total_hessian[name] += value*len(inputs)
+                if loader_idx == client_idx:
+                    target_hessian[name] += value*len(inputs)
 
             if stochastic_correction:
                 for name, value in grad.items():
-                    if loader_idx == client_idx:
-                        if name not in target_gradients:
-                            target_gradients[name] = []
-                        target_gradients[name].append(value*len(inputs))
-                    if name not in total_gradients:
-                        total_gradients[name] = []
                     total_gradients[name].append(value*len(inputs))
+                    if loader_idx == client_idx:
+                        target_gradients[name].append(value*len(inputs))
             
             tqdm_bar.update(1)
     
@@ -139,14 +134,17 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
             target_var = torch.var(target_grad, dim=0, unbiased=True)
             total_var = torch.var(total_grad, dim=0, unbiased=True)
 
-            target_ratio = target_var / target_hessian[name]
-            total_ratio = total_var / total_hessian[name]
+            correction = target_var / (1 + total_var)
 
-            correction = (total_ratio - target_ratio) / (1 + total_ratio)
+            debug_info = correction / (target_hessian[name] / total_hessian[name])
+            debug_info = torch.nan_to_num(debug_info, nan=0.0, posinf=0.0, neginf=0.0)
+            print(f"Layer: {name}")
+            print(torch.linalg.norm(debug_info)/debug_info.numel())
+
+            layer_info= torch.pow(target_hessian[name]/total_hessian[name] - correction, 2)
         else:
-            correction = torch.zeros_like(target_hessian[name])
-
-        layer_info= torch.pow(target_hessian[name]/total_hessian[name]*(1+correction), 2)
+            layer_info= torch.pow(target_hessian[name]/total_hessian[name], 2)
+            
         layer_info[total_hessian[name] <= 0] = 0
         layer_info[target_hessian[name] <= 0] = 0
         target_client_info[name] = layer_info.detach().cpu()

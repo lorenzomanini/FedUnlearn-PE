@@ -8,7 +8,7 @@ def generate_params_ranges(test_params_dict):
     test_params_dict_0['subtest'] = 0
     test_params_dict_0['unlearning_method'] = 'information'
 
-    percentages = np.arange(0, 90, 20)
+    percentages = [40,50,60]
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -38,18 +38,19 @@ def generate_params_ranges(test_params_dict):
 
 if __name__ == "__main__":
 
-    save_path = './stat_tests/TEST'
+    save_path = './stat_tests/STOCHASTIC'
 
-    num_tests = 1
+    num_tests = 20
     num_workers = 1
     hessian_method = 'diag_ggn_mc'
 
+    tester.set_batch_sizes(train_batch_size=1024)
     tester.set_batch_sizes(info_batch_size=tester.TRAIN_BATCH_SIZE)
 
     # MNIST random
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'MNIST_random_STOCHASTIC',
+        'test_name': 'MNIST_random',
 
         'dataset_name': 'mnist',
         'num_clients': 5,
@@ -76,13 +77,13 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # MNIST preferential
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'MNIST_pref_STOCHASTIC',
+        'test_name': 'MNIST_pref',
 
         'dataset_name': 'mnist',
         'num_clients': 5,
@@ -176,7 +177,7 @@ if __name__ == "__main__":
     # FMNIST random
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'FMNIST_random_PAPER',
+        'test_name': 'FMNIST_random_STOCHASTIC',
 
         'dataset_name': 'FashionMNIST',
         'num_clients': 5,
@@ -191,7 +192,8 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
-        'hessian_method': hessian_method
+        'hessian_method': hessian_method,
+        'stochastic_correction': True
     }
 
     test_params_dict : TestParamsDict = {
@@ -202,13 +204,13 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST preferential
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'FMNIST_pref_PAPER',
+        'test_name': 'FMNIST_pref_STOCHASTIC',
 
         'dataset_name': 'FashionMNIST',
         'num_clients': 5,
@@ -223,7 +225,8 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
-        'hessian_method': hessian_method
+        'hessian_method': hessian_method,
+        'stochastic_correction': True
     }
 
     test_params_dict : TestParamsDict = {
@@ -233,7 +236,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR100 random
@@ -264,7 +267,7 @@ if __name__ == "__main__":
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR100 preferential
