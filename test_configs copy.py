@@ -1,6 +1,6 @@
 import numpy as np
-import tester
-from tester import run_repeated_tests, InitParamsDict, TestParamsDict
+import new_tester as tester
+from new_tester import run_repeated_tests, InitParamsDict, TestParamsDict
 
 def generate_params_ranges(test_params_dict):
     # Tests with info percentage based resetting
@@ -8,7 +8,8 @@ def generate_params_ranges(test_params_dict):
     test_params_dict_0['subtest'] = 0
     test_params_dict_0['unlearning_method'] = 'information'
 
-    percentages = [40,50,60]
+    percentages = [0,40,50,60]
+    # percentages = np.arange(0, 91, 10)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -38,14 +39,13 @@ def generate_params_ranges(test_params_dict):
 
 if __name__ == "__main__":
 
-    save_path = './stat_tests/STOCHASTIC'
+    save_path = './stat_tests/NEW_TESTER'
 
-    num_tests = 20
+    num_tests = 3
     num_workers = 1
     hessian_method = 'diag_ggn_mc'
 
-    tester.set_batch_sizes(train_batch_size=1024)
-    tester.set_batch_sizes(info_batch_size=tester.TRAIN_BATCH_SIZE)
+    tester.set_batch_sizes(128,128,128,128)
 
     # MNIST random
 
@@ -70,8 +70,6 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
-            'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
 
@@ -103,13 +101,12 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 1
         }
     
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 random

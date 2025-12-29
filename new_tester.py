@@ -77,16 +77,14 @@ def compute_accuracy(model, dataset):
 def evaluate_model(model, dataset):
     dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     outputs = []
-    input_labels = []
     model.to(DEVICE)
     with torch.no_grad():
-        for images, labels in dataloader:
+        for images, _ in dataloader:
             images = images.to(DEVICE)
             output = model(images)
             outputs.append(output.cpu())
-            input_labels.append(labels.cpu())
     model.cpu()
-    return torch.cat(outputs), torch.cat(input_labels)
+    return torch.cat(outputs).numpy()
 
 
 class InitParamsDict(TypedDict):
@@ -148,7 +146,7 @@ class Test():
         hessian_method = init_params_dict.get('hessian_method', 'diag_ggn_mc')
         stochastic_correction = init_params_dict.get('stochastic_correction', False)
 
-
+        logging.info("Preparing subsets for training...")
         eval_split_ratio = 0.1
         shadow_out_subsets = []
         eval_subsets = []
@@ -167,7 +165,7 @@ class Test():
         shadow_in_subsets = [Subset(self.complete_dataset, subset.indices) for subset in train_subsets]
         shadow_in_subsets.append(Subset(self.complete_dataset, list(range(len(self.train_dataset), len(self.complete_dataset)))))  # add test dataset as last subset
 
-        logging.info("Training model...") 
+        logging.info("Training trained model...") 
         self.trained_model = self.trainer_function(
             self.model_class(), self.loss_class(), train_subsets, eval_subsets,
             train_epochs
@@ -176,7 +174,7 @@ class Test():
         logging.info("Computing information...")
         self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, stochastic_correction=stochastic_correction, use_converter=info_use_converter, method=hessian_method)
 
-        logging.info("Training benchmark model...") 
+        logging.info("Training shadow_out model...") 
         shadow_out_model = self.trainer_function(
             self.model_class(), self.loss_class(), shadow_out_subsets, eval_subsets,
             train_epochs
@@ -188,13 +186,14 @@ class Test():
             train_epochs
         )
 
-        self.init_eval_results = {}
-        self.init_eval_results["test"] = {
+        logging.info("Computing initial evaluation results...")
+
+        self.init_eval_test_results = {
             "trained": evaluate_model(self.trained_model, self.test_dataset),
             "shadow_out": evaluate_model(shadow_out_model, self.test_dataset),
             "shadow_in": evaluate_model(shadow_in_model, self.test_dataset)
         }
-        self.init_eval_results["train"] = {
+        self.init_eval_train_results = {
             "trained": evaluate_model(self.trained_model, self.train_dataset),
             "shadow_out": evaluate_model(shadow_out_model, self.train_dataset),
             "shadow_in": evaluate_model(shadow_in_model, self.train_dataset)
@@ -253,21 +252,20 @@ class Test():
         extra_results['reset_params_percentage'] = reset_params_percentage
         
 
-        eval_results = {}
-        eval_results["test"] = {
+        eval_test_results = {
             "reset": evaluate_model(reset_model, self.test_dataset),
             "retrained": evaluate_model(retrained_model, self.test_dataset),
             "random_reset": evaluate_model(random_reset_model, self.test_dataset),
             "random_retrained": evaluate_model(random_retrained_model, self.test_dataset)
         }
-        eval_results["train"] = {
+        eval_train_results = {
             "reset": evaluate_model(reset_model, self.train_dataset),
             "retrained": evaluate_model(retrained_model, self.train_dataset),
             "random_reset": evaluate_model(random_reset_model, self.train_dataset),
             "random_retrained": evaluate_model(random_retrained_model, self.train_dataset)
         }
 
-        return eval_results, extra_results
+        return eval_test_results, eval_train_results, extra_results
     
 def get_datasets(init_params_dict):
 
@@ -682,28 +680,47 @@ def run_tests_iter(iter, arg):
 
     test_instance = Test(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, init_params_dict, poisoned_backdoor_dataset, clean_backdoor_dataset)
 
-    init_eval_results = test_instance.init_eval_results
-    with open(os.path.join(test_iter_path, "initial_evaluation_results.pkl"), 'wb') as f:
-        pickle.dump(init_eval_results, f)
+    with open(os.path.join(test_iter_path, "initial_eval_test_results.pkl"), 'wb') as f:
+        pickle.dump(test_instance.init_eval_test_results, f)
+    with open(os.path.join(test_iter_path, "initial_eval_train_results.pkl"), 'wb') as f:
+        pickle.dump(test_instance.init_eval_train_results, f)
 
-    eval_results = []
-    extra_results = []
+    acc_eval_test_results = []
+    acc_eval_train_results = []
+    acc_extra_results = []
     errors = []
     for i, test_params_dict in enumerate(tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
         try:
-            iter_eval_results, iter_extra_results = test_instance.run_test(test_params_dict)
-            eval_results.append(iter_eval_results)
-            extra_results.append(iter_extra_results)
+            eval_test_result, eval_train_result, test_extra_result = test_instance.run_test(test_params_dict)
+            acc_eval_test_results.append(eval_test_result)
+            acc_eval_train_results.append(eval_train_result)
+            acc_extra_results.append(test_extra_result)
         except Exception as e:
             logging.error(f"Error in test {i} of iteration {iter}: {str(e)}")
             traceback_str = ''.join(traceback.format_tb(e.__traceback__))
             logging.error(f"Traceback:\n{traceback_str}")
             errors.append(i)
-            eval_results.append({'error': str(e)})
-            extra_results.append({'error': str(e)})
+            acc_eval_test_results.append({'error': str(e)})
+            acc_extra_results.append({'error': str(e)})
             
-    with open(os.path.join(test_iter_path, "evaluation_results.pkl"), 'wb') as f:
-        pickle.dump(eval_results, f)
+    eval_test_results = {}
+    for key in acc_eval_test_results[0].keys():
+        eval_test_results[key] = np.stack([acc_eval_test_results[i][key] for i in range(len(acc_eval_test_results))])
+
+    with open(os.path.join(test_iter_path, "eval_test_results.npz"), 'wb') as f:
+        np.savez(f, **eval_test_results)
+
+    eval_train_results = {}
+    for key in acc_eval_train_results[0].keys():
+        eval_train_results[key] = np.stack([acc_eval_train_results[i][key] for i in range(len(acc_eval_train_results))])
+
+    with open(os.path.join(test_iter_path, "eval_train_results.npz"), 'wb') as f:
+        np.savez(f, **eval_train_results)
+    
+    extra_results = {}
+    for key in acc_extra_results[0].keys():
+        extra_results[key] = [acc_extra_results[i][key] for i in range(len(acc_extra_results))]
+
     with open(os.path.join(test_iter_path, "extra_results.pkl"), 'wb') as f:
         pickle.dump(extra_results, f)
 
@@ -767,9 +784,15 @@ def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_worke
         logging.info("Poisoning is disabled.")
 
     client_indices = [subset.indices for subset in clients_subsets]
-    clients_indices_path = os.path.join(test_path, "clients_indices.pkl")
-    with open(clients_indices_path, 'wb') as f:
+    with open(os.path.join(test_path, "clients_indices.pkl"), 'wb') as f:
         pickle.dump(client_indices, f)
+    
+    labels = {
+        'train': [label for _, label in train_dataset],
+        'test': [label for _, label in test_dataset]
+    }
+    with open(os.path.join(test_path, "labels.pkl"), 'wb') as f:
+        pickle.dump(labels, f)
 
     arg = {
         'test_path': test_path,

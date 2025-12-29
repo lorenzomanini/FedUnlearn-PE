@@ -52,9 +52,8 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
     elif method == 'diag_ggn_mc':
         backpack_extension = DiagGGNMC()
         backpack_parameter = 'diag_ggn_mc'
-    elif method == 'random':
-        if stochastic_correction:
-            raise ValueError("Stochastic correction not applicable for 'random' method.")
+    elif method == 'zeros':
+        stochastic_correction = False
         pass
     else:
         raise ValueError("Invalid method. Use 'diag_hessian', 'diag_ggn' or 'diag_ggn_mc'.")
@@ -83,16 +82,11 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
     num_batches = sum(len(loader) for loader in dataloader_list)
     tqdm_bar = tqdm(total=num_batches, desc="Computing clients information", unit="batch", leave=False)    
 
-    for loader_idx, loader in enumerate(dataloader_list):
-        for inputs, targets in loader:
-            diag_h = {}
-            grad = {}
-
-            if method == 'random':
-                for name, param in model.named_parameters():
-                    if param.requires_grad:
-                        diag_h[name] = torch.rand_like(param)
-            else:
+    if method != 'zeros':
+        for loader_idx, loader in enumerate(dataloader_list):
+            for inputs, targets in loader:
+                diag_h = {}
+                grad = {}
                 inputs = inputs.to(DEVICE)
                 targets = targets.to(DEVICE)
 
@@ -105,22 +99,19 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
 
                 for name, param in model.named_parameters():
                     if param.requires_grad:
-                        diag_h[name] = getattr(param, backpack_parameter).clone().detach()
-                        grad[name] = param.grad.clone().detach()
-                        delattr(param, backpack_parameter)
+                        diag_h = getattr(param, backpack_parameter).clone().detach() * len(inputs)
 
-            for name, value in diag_h.items():
-                total_hessian[name] += value*len(inputs)
-                if loader_idx == client_idx:
-                    target_hessian[name] += value*len(inputs)
+                        total_hessian[name] += diag_h
+                        if loader_idx == client_idx:
+                            target_hessian[name] += diag_h
 
-            if stochastic_correction:
-                for name, value in grad.items():
-                    total_gradients[name].append(value*len(inputs))
-                    if loader_idx == client_idx:
-                        target_gradients[name].append(value*len(inputs))
-            
-            tqdm_bar.update(1)
+                        if stochastic_correction:
+                            grad = param.grad.clone().detach() * len(inputs)
+                            total_gradients[name].append(grad)
+                            if loader_idx == client_idx:
+                                target_gradients[name].append(grad)
+                
+                tqdm_bar.update(1)
     
     tqdm_bar.close()
 

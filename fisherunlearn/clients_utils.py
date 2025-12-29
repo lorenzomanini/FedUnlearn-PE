@@ -58,6 +58,22 @@ def concatenate_subsets(subsets):
     full_dataset = subsets[0].dataset
     return Subset(full_dataset, indices)
 
+def random_split_subset(subset, lengths):
+    total_length = sum(lengths)
+    assert total_length <= len(subset), "Sum of lengths exceeds subset size."
+
+    indices = np.array(subset.indices)
+    np.random.shuffle(indices)
+
+    split_subsets = []
+    start = 0
+    for length in lengths:
+        split_indices = indices[start:start + length].tolist()
+        split_subsets.append(Subset(subset.dataset, split_indices))
+        start += length
+
+    return split_subsets
+
 import torch
 import numpy as np
 from torch.utils.data import TensorDataset

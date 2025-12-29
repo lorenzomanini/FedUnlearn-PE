@@ -145,6 +145,61 @@ def compute_accuracy(model, dataset):
 
     return correct / total
 
+class PerformanceEvaluator():
+    def __init__(self, model, dataset):
+        dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
+        self.outputs = []
+        self.labels = []
+        model.to(DEVICE)
+        with torch.no_grad():
+            for images, labels in dataloader:
+                images = images.to(DEVICE)
+                output = model(images)
+                self.outputs.append(output.cpu())
+                self.labels.append(labels.cpu())
+        self.outputs = torch.cat(self.outputs)
+        self.labels = torch.cat(self.labels)
+        model.cpu()
+
+    def _labels_outputs_subset(self, subset):
+        if subset is not None:
+            subset_indices = subset.indices
+            subset_outputs = self.outputs[subset_indices]
+            subset_labels = self.labels[subset_indices]
+        else:
+            subset_outputs = self.outputs
+            subset_labels = self.labels
+
+        return subset_outputs, subset_labels
+
+    def get_accuracy(self, subset=None):
+        subset_outputs, subset_labels = self._labels_outputs_subset(subset)
+
+        _, predicted = torch.max(subset_outputs.data, 1)
+        correct = (predicted == subset_labels).sum().item()
+
+        return correct / len(subset_labels)
+    
+    def get_losses(self, subset=None):
+        subset_outputs, subset_labels = self._labels_outputs_subset(subset)
+        loss_fc = nn.CrossEntropyLoss(reduction='none')
+
+        return loss_fc(subset_outputs, subset_labels)
+    
+    def offline_lira_score(self, local_means, global_var, subset=None):
+        subset_outputs, subset_labels = self._labels_outputs_subset(subset)
+        
+        loss_fc = nn.CrossEntropyLoss(reduction='none')
+        loss = loss_fc(subset_outputs, subset_labels)
+
+        #cumulative distribution function for Gaussian
+        def cdf(x, mean, var):
+            return 0.5 * (1 + torch.erf((x - mean) / (torch.sqrt(2 * var))))
+        scores = cdf(loss, local_means, global_var)
+
+        return scores
+
+
 class InitParamsDict(TypedDict):
     test_name: str
     dataset_name: Literal['mnist', 'cifar10', 'FashionMNIST', 'cifar100']
@@ -183,15 +238,12 @@ class Test:
         # Initialize parameters
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
-        self.clients_datasets = clients_subsets
+        self.clients_subsets = clients_subsets
         self.target_client = init_params_dict.get('target_client', 0)
 
-        self.target_dataset = self.clients_datasets[self.target_client]
-        self.benchmark_datasets = [subset for i, subset in enumerate(self.clients_datasets) if i != self.target_client]
-
-        self.classes_datasets = split_dataset_by_class_distribution(self.test_dataset, np.identity(init_params_dict['num_classes']))
-        self.categorical_test_datasets = [subset for i, subset in enumerate(self.classes_datasets) if i != self.target_client]
-
+        self.target_subset = self.clients_subsets[self.target_client]
+        self.benchmark_subsets = [subset for i, subset in enumerate(self.clients_subsets) if i != self.target_client]
+        
         self.poisoned_backdoor_dataset = poisoned_backdoor_dataset
         self.clean_backdoor_dataset = clean_backdoor_dataset
 
@@ -208,33 +260,47 @@ class Test:
         self.client_information = None
 
         # Initialize communication trackers
-        self.initial_training_comm_tracker = CommunicationTracker(len(self.clients_datasets), self.model_class())
-        self.benchmark_training_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
+        self.initial_training_comm_tracker = CommunicationTracker(len(self.clients_subsets), self.model_class())
+        self.benchmark_training_comm_tracker = CommunicationTracker(len(self.benchmark_subsets), self.model_class())
         # Tracker for unlearning phase ONLY (Hessian exchange)
-        self.unlearning_comm_tracker = CommunicationTracker(len(self.clients_datasets), self.model_class())
+        self.unlearning_comm_tracker = CommunicationTracker(len(self.clients_subsets), self.model_class())
 
         logging.info("Training model...") 
         self.trained_model = self.trainer_function(
-            self.model_class(), self.loss_class(), self.clients_datasets, 
+            self.model_class(), self.loss_class(), self.clients_subsets, 
             self.train_epochs, comm_tracker=self.initial_training_comm_tracker
         )
         self.num_total_params = sum(p.numel() for p in self.trained_model.parameters())
 
         logging.info("Training benchmark model...") 
         self.benchmark_model = self.trainer_function(
-            self.model_class(), self.loss_class(), self.benchmark_datasets, 
+            self.model_class(), self.loss_class(), self.benchmark_subsets, 
             self.train_epochs, comm_tracker=self.benchmark_training_comm_tracker
         )
 
         logging.info("Computing information...")
         hessian_method = init_params_dict.get('hessian_method', 'diag_ggn')
         stochastic_correction = init_params_dict.get('stochastic_correction', False)
-        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_datasets, stochastic_correction=stochastic_correction, use_converter=self.info_use_converter, method=hessian_method)
+        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, stochastic_correction=stochastic_correction, use_converter=self.info_use_converter, method=hessian_method)
         
         # Record Hessian computation communication on the UNLEARNING tracker
         # (Downlink: Model, Uplink: Diagonal Hessian per client)
         # Diagonal Hessian has the same size as the model parameters.
         self.unlearning_comm_tracker.record_round()
+        
+        self.init_train_PE_dict = {}
+        tqdm_bar = tqdm(total=2, desc="Initializing Train Dataset Performance Evaluators", unit="PE", leave=False)
+        self.init_train_PE_dict['trained'] = PerformanceEvaluator(self.trained_model, self.train_dataset)
+        tqdm_bar.update(1)
+        self.init_train_PE_dict['benchmark'] = PerformanceEvaluator(self.benchmark_model, self.train_dataset)
+        tqdm_bar.close()
+
+        self.init_test_PE_dict = {}
+        tqdm_bar = tqdm(total=2, desc="Initializing Test Dataset Performance Evaluators", unit="PE", leave=False)
+        self.init_test_PE_dict['trained'] = PerformanceEvaluator(self.trained_model, self.test_dataset)
+        tqdm_bar.update(1)
+        self.init_test_PE_dict['benchmark'] = PerformanceEvaluator(self.benchmark_model, self.test_dataset)
+        tqdm_bar.close()
 
 
     def run_test(self, test_params_dict):
@@ -254,8 +320,8 @@ class Test:
                  num_reset_params += indices_tensor.shape[0]
 
         # Initialize communication trackers for retraining
-        retrain_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
-        random_retrain_comm_tracker = CommunicationTracker(len(self.benchmark_datasets), self.model_class())
+        retrain_comm_tracker = CommunicationTracker(len(self.benchmark_subsets), self.model_class())
+        random_retrain_comm_tracker = CommunicationTracker(len(self.benchmark_subsets), self.model_class())
 
         if num_reset_params != 0:
             reset_model = self.model_class()
@@ -267,7 +333,7 @@ class Test:
             self.unlearning_comm_tracker.record_downlink()
 
             retrainer = UnlearnNet(reset_model, informative_params) 
-            self.trainer_function(retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs, comm_tracker=retrain_comm_tracker)
+            self.trainer_function(retrainer, self.loss_class(), self.benchmark_subsets, retrain_epochs, comm_tracker=retrain_comm_tracker)
             retrained_model = self.model_class()
             retrained_model.load_state_dict(retrainer.get_retrained_params())
 
@@ -279,7 +345,7 @@ class Test:
             random_reset_model.load_state_dict(random_reset_state_dict)
 
             random_retrainer = UnlearnNet(random_reset_model, random_params)
-            self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_datasets, retrain_epochs, comm_tracker=random_retrain_comm_tracker)
+            self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_subsets, retrain_epochs, comm_tracker=random_retrain_comm_tracker)
             random_retrained_model = self.model_class()
             random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
         else:
@@ -332,6 +398,28 @@ class Test:
         result['unlearning_total_rounds'] = unlearning_hessian_comm['communication_rounds']
         result['unlearning_total_bytes'] = unlearning_hessian_comm['total_communication_bytes']
 
+        train_PE_dict = {}
+        tqdm_bar = tqdm(total=4, desc="Initializing Train Dataset Performance Evaluators", unit="PE", leave=False)
+        train_PE_dict['reset'] = PerformanceEvaluator(reset_model, self.train_dataset)
+        tqdm_bar.update(1)
+        train_PE_dict['retrained'] = PerformanceEvaluator(retrained_model, self.train_dataset)
+        tqdm_bar.update(1)
+        train_PE_dict['random_reset'] = PerformanceEvaluator(random_reset_model, self.train_dataset)
+        tqdm_bar.update(1)
+        train_PE_dict['random_retrained'] = PerformanceEvaluator(random_retrained_model, self.train_dataset)
+        tqdm_bar.close()
+
+        test_PE_dict = {}
+        tqdm_bar = tqdm(total=4, desc="Initializing Test Dataset Performance Evaluators", unit="PE", leave=False)
+        test_PE_dict['reset'] = PerformanceEvaluator(reset_model, self.test_dataset)
+        tqdm_bar.update(1)
+        test_PE_dict['retrained'] = PerformanceEvaluator(retrained_model, self.test_dataset)
+        tqdm_bar.update(1)
+        test_PE_dict['random_reset'] = PerformanceEvaluator(random_reset_model, self.test_dataset)
+        tqdm_bar.update(1)
+        test_PE_dict['random_retrained'] = PerformanceEvaluator(random_retrained_model, self.test_dataset)
+        tqdm_bar.close()
+
         if 'test_accuracy' in test_params_dict['tests']:
             logging.info("Computing test accuracies...")
 
@@ -339,15 +427,14 @@ class Test:
                 result['trained_test_accuracy'] = self.trained_test_accuracy
                 result['benchmark_test_accuracy'] = self.benchmark_test_accuracy
             except AttributeError:
-                self.trained_test_accuracy = compute_accuracy(self.trained_model, self.test_dataset)
-                self.benchmark_test_accuracy = compute_accuracy(self.benchmark_model, self.test_dataset)
+                self.trained_test_accuracy = self.init_test_PE_dict['trained'].get_accuracy()
+                self.benchmark_test_accuracy = self.init_test_PE_dict['benchmark'].get_accuracy()
                 result['trained_test_accuracy'] = self.trained_test_accuracy
                 result['benchmark_test_accuracy'] = self.benchmark_test_accuracy
             
-            result['reset_test_accuracy'] = compute_accuracy(reset_model, self.test_dataset)
-            result['retrained_test_accuracy'] = compute_accuracy(retrained_model, self.test_dataset)
-            result['random_reset_test_accuracy'] = compute_accuracy(random_reset_model, self.test_dataset)
-            result['random_retrained_test_accuracy'] = compute_accuracy(random_retrained_model, self.test_dataset)
+            for key, pe in test_PE_dict.items():
+                result[f'{key}_test_accuracy'] = pe.get_accuracy()
+
 
         if 'target_accuracy' in test_params_dict['tests']:
             logging.info("Computing target accuracies...")
@@ -355,15 +442,13 @@ class Test:
                 result['trained_target_accuracy'] = self.trained_target_accuracy
                 result['benchmark_target_accuracy'] = self.benchmark_target_accuracy
             except AttributeError:
-                self.trained_target_accuracy = compute_accuracy(self.trained_model, self.target_dataset)
-                self.benchmark_target_accuracy = compute_accuracy(self.benchmark_model, self.target_dataset)
+                self.trained_target_accuracy = self.init_train_PE_dict['trained'].get_accuracy(self.target_subset)
+                self.benchmark_target_accuracy = self.init_train_PE_dict['benchmark'].get_accuracy(self.target_subset)
                 result['trained_target_accuracy'] = self.trained_target_accuracy
                 result['benchmark_target_accuracy'] = self.benchmark_target_accuracy
 
-            result['reset_target_accuracy'] = compute_accuracy(reset_model, self.target_dataset)
-            result['retrained_target_accuracy'] = compute_accuracy(retrained_model, self.target_dataset)
-            result['random_reset_target_accuracy'] = compute_accuracy(random_reset_model, self.target_dataset)
-            result['random_retrained_target_accuracy'] = compute_accuracy(random_retrained_model, self.target_dataset)
+            for key, pe in train_PE_dict.items():
+                result[f'{key}_target_accuracy'] = pe.get_accuracy(self.target_subset)
 
         if 'clients_accuracies' in test_params_dict['tests']:
             logging.info("Computing clients accuracies...")
@@ -371,15 +456,13 @@ class Test:
                 result['trained_clients_accuracies'] = self.trained_clients_accuracies
                 result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies
             except AttributeError:
-                self.trained_clients_accuracies = [compute_accuracy(self.trained_model, subset) for subset in self.clients_datasets]
-                self.benchmark_clients_accuracies = [compute_accuracy(self.benchmark_model, subset) for subset in self.clients_datasets]
+                self.trained_clients_accuracies = [self.init_train_PE_dict['trained'].get_accuracy(subset) for subset in self.clients_subsets]
+                self.benchmark_clients_accuracies = [self.init_train_PE_dict['benchmark'].get_accuracy(subset) for subset in self.clients_subsets]
                 result['trained_clients_accuracies'] = self.trained_clients_accuracies
                 result['benchmark_clients_accuracies'] = self.benchmark_clients_accuracies
             
-            result['reset_clients_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.clients_datasets]
-            result['retrained_clients_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.clients_datasets]
-            result['random_reset_clients_accuracies'] = [compute_accuracy(random_reset_model, subset) for subset in self.clients_datasets]
-            result['random_retrained_clients_accuracies'] = [compute_accuracy(random_retrained_model, subset) for subset in self.clients_datasets]
+            for key, pe in train_PE_dict.items():
+                result[f'{key}_clients_accuracies'] = [pe.get_accuracy(subset) for subset in self.clients_subsets]
 
         if 'class_accuracies' in test_params_dict['tests']:
             logging.info("Computing class accuracies...")
@@ -387,15 +470,41 @@ class Test:
                 result['trained_class_accuracies'] = self.trained_class_accuracies
                 result['benchmark_class_accuracies'] = self.benchmark_class_accuracies
             except AttributeError:
-                self.trained_class_accuracies = [compute_accuracy(self.trained_model, subset) for subset in self.classes_datasets]
-                self.benchmark_class_accuracies = [compute_accuracy(self.benchmark_model, subset) for subset in self.classes_datasets]
+                self.trained_class_accuracies = [self.init_train_PE_dict['trained'].get_accuracy(subset) for subset in self.classes_subsets]
+                self.benchmark_class_accuracies = [self.init_train_PE_dict['benchmark'].get_accuracy(subset) for subset in self.classes_subsets]
                 result['trained_class_accuracies'] = self.trained_class_accuracies
                 result['benchmark_class_accuracies'] = self.benchmark_class_accuracies
 
-            result['reset_class_accuracies'] = [compute_accuracy(reset_model, subset) for subset in self.classes_datasets]
-            result['retrained_class_accuracies'] = [compute_accuracy(retrained_model, subset) for subset in self.classes_datasets]
-            result['random_reset_class_accuracies'] = [compute_accuracy(random_reset_model, subset) for subset in self.classes_datasets]
-            result['random_retrained_class_accuracies'] = [compute_accuracy(random_retrained_model, subset) for subset in self.classes_datasets]
+            for key, pe in train_PE_dict.items():
+                result[f'{key}_class_accuracies'] = [pe.get_accuracy(subset) for subset in self.classes_subsets]
+
+        if 'LiRA' in test_params_dict['tests']:
+            def lira_auc(members_scores, nonmembers_scores):
+                from sklearn.metrics import roc_auc_score
+                y_true = np.array([1] * len(members_scores) + [0] * len(nonmembers_scores))
+                y_scores = np.concatenate([members_scores, nonmembers_scores])
+                return roc_auc_score(y_true, y_scores)
+            
+            def lira_tpr_at_fpr(members_scores, nonmembers_scores, fpr_threshold=0.01):
+                from sklearn.metrics import roc_curve
+                y_true = np.array([1] * len(members_scores) + [0] * len(nonmembers_scores))
+                y_scores = np.concatenate([members_scores, nonmembers_scores])
+                fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+                for fp, tp in zip(fpr, tpr):
+                    if fp >= fpr_threshold:
+                        return tp
+                return 0.0
+            
+            logging.info("Computing LiRA scores...")
+            benchmark_target_losses = self.init_train_PE_dict['benchmark'].get_losses(subset=self.target_subset)
+            benchmark_test_losses = self.init_test_PE_dict['benchmark'].get_losses()
+            var = torch.var(torch.cat([benchmark_target_losses, benchmark_test_losses]))
+            for key, pe in train_PE_dict.items():
+                member_scores = pe.offline_lira_score(benchmark_target_losses, var, subset=self.target_subset)
+                nonmember_scores = test_PE_dict[key].offline_lira_score(benchmark_test_losses, var)
+                result[f'{key}_LiRA_auc'] = lira_auc(member_scores, nonmember_scores)
+                result[f'{key}_LiRA_tpr_at_1fpr'] = lira_tpr_at_fpr(member_scores, nonmember_scores, fpr_threshold=0.01)
+
 
         if 'poisoned_backdoor_accuracy' in test_params_dict['tests'] and self.poisoned_backdoor_dataset:
             logging.info("Computing Poisoned Backdoor Accuracy...")
@@ -437,15 +546,17 @@ class Test:
                     result[f'trained_mia_{classifier_type}'] = self.trained_mia
                     result[f'benchmark_mia_{classifier_type}'] = self.benchmark_mia
                 except AttributeError:
-                    self.trained_mia = mia_attack(self.trained_model, self.target_dataset, self.test_dataset, classifier_type)
-                    self.benchmark_mia = mia_attack(self.benchmark_model, self.target_dataset, self.test_dataset, classifier_type)
+                    self.trained_mia = mia_attack(self.trained_model, self.target_subset, self.test_dataset, classifier_type)
+                    self.benchmark_mia = mia_attack(self.benchmark_model, self.target_subset, self.test_dataset, classifier_type)
+                    if self.trained_mia["accuracy"] == self.benchmark_mia["accuracy"]:
+                        logging.warning("Trained and Benchmark MIA have the same accuracy")
                     result[f'trained_mia_{classifier_type}'] = self.trained_mia
                     result[f'benchmark_mia_{classifier_type}'] = self.benchmark_mia
 
-                result[f'reset_mia_{classifier_type}'] = mia_attack(reset_model, self.target_dataset, self.test_dataset, classifier_type)
-                result[f'retrained_mia_{classifier_type}'] = mia_attack(retrained_model, self.target_dataset, self.test_dataset, classifier_type)
-                result[f'random_reset_mia_{classifier_type}'] = mia_attack(random_reset_model, self.target_dataset, self.test_dataset, classifier_type)
-                result[f'random_retrained_mia_{classifier_type}'] = mia_attack(random_retrained_model, self.target_dataset, self.test_dataset, classifier_type)
+                result[f'reset_mia_{classifier_type}'] = mia_attack(reset_model, self.target_subset, self.test_dataset, classifier_type)
+                result[f'retrained_mia_{classifier_type}'] = mia_attack(retrained_model, self.target_subset, self.test_dataset, classifier_type)
+                result[f'random_reset_mia_{classifier_type}'] = mia_attack(random_reset_model, self.target_subset, self.test_dataset, classifier_type)
+                result[f'random_retrained_mia_{classifier_type}'] = mia_attack(random_retrained_model, self.target_subset, self.test_dataset, classifier_type)
 
         return result
     
