@@ -8,8 +8,8 @@ def generate_params_ranges(test_params_dict):
     test_params_dict_0['subtest'] = 0
     test_params_dict_0['unlearning_method'] = 'information'
 
-    percentages = [0,40,50,60]
-    # percentages = np.arange(0, 91, 10)
+    # percentages = [0,40,50,60]
+    percentages = np.arange(5, 95, 5)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -41,8 +41,8 @@ if __name__ == "__main__":
 
     save_path = './stat_tests/NEW_TESTER'
 
-    num_tests = 3
-    num_workers = 1
+    num_tests = 20
+    num_workers = 4
     hessian_method = 'diag_ggn_mc'
 
     tester.set_batch_sizes(128,128,128,128)
@@ -106,13 +106,13 @@ if __name__ == "__main__":
     
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 random
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'CIFAR_random_PAPER',
+        'test_name': 'CIFAR_random',
 
         'dataset_name': 'cifar10',
         'num_clients': 5,
@@ -131,20 +131,18 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
-            'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
 
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 preferential
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'CIFAR_pref_PAPER',
+        'test_name': 'CIFAR_pref',
 
         'dataset_name': 'cifar10',
         'num_clients': 5,
@@ -163,18 +161,17 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 1
         }
     
     test_params_dicts = generate_params_ranges(test_params_dict)
-    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST random
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'FMNIST_random_STOCHASTIC',
+        'test_name': 'FMNIST_random',
 
         'dataset_name': 'FashionMNIST',
         'num_clients': 5,
@@ -194,20 +191,18 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
-            'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST preferential
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'FMNIST_pref_STOCHASTIC',
+        'test_name': 'FMNIST_pref',
 
         'dataset_name': 'FashionMNIST',
         'num_clients': 5,
@@ -227,19 +222,18 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 1
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR100 random
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'CIFAR100_random_PAPER',
+        'test_name': 'CIFAR100_random',
 
         'dataset_name': 'cifar100',
         'num_clients': 5,
@@ -258,19 +252,17 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'mia'],
-            'mia_classifier_types': ['nn', 'logistic'],
             'retrain_epochs': 1
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR100 preferential
 
     init_params_dict : InitParamsDict = {
-        'test_name': 'CIFAR100_pref_PAPER',
+        'test_name': 'CIFAR100_pref',
 
         'dataset_name': 'cifar100',
         'num_clients': 5,
@@ -289,12 +281,11 @@ if __name__ == "__main__":
     }
 
     test_params_dict : TestParamsDict = {
-            'tests': ['test_accuracy', 'clients_accuracies', 'class_accuracies'],
             'retrain_epochs': 1
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    #run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # POISON ATTACK
