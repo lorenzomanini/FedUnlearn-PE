@@ -81,26 +81,6 @@ def compute_shadow_losses_dists(losses_members, losses_nonmembers, global_var=Fa
 
     return member_dists, nonmember_dists
 
-def compute_shadow_losses_dists_old(merged_initial_results, labels, subset=None):
-    idx = slice(None) if subset is None else subset
-    labels_tensor = torch.tensor(labels)
-    loss_fn = CrossEntropyLoss(reduction='none')
-    losses_dists = {}
-    for model_key in merged_initial_results.keys():
-        losses_list= []
-        for outputs in merged_initial_results[model_key][0]:
-            outputs_tensor = torch.tensor(outputs)
-            loss = loss_fn(outputs_tensor[idx], labels_tensor[idx])
-            losses_list.append(loss)
-        losses_tensor = torch.stack(losses_list, dim=0)
-        avg = torch.mean(losses_tensor, dim=0)
-        std = torch.std(losses_tensor, dim=0)
-        losses_dists[model_key] = {
-            'avg': avg.numpy(),
-            'std': std.numpy()
-        }
-    return losses_dists
-
 def log_gaussian_pdf(x, mu, sigma):
     coeff = - np.log(sigma)
     exponent = -0.5 * ((x - mu) / sigma) ** 2
@@ -142,6 +122,24 @@ def compute_roc_curves(lira_member_scores, lira_nonmember_scores):
                 test_roc_curves.append({'fpr': fpr, 'tpr': tpr, 'auc': roc_auc})
             roc_curves[model_key].append(test_roc_curves)
     return roc_curves
+
+def compute_tpr_at_fpr(roc_curve_data, target_fpr=0.01):
+    tpr_at_fpr = {}
+    for model_key in roc_curve_data.keys():
+        tpr_at_fpr[model_key] = []
+        for test_roc_curves in roc_curve_data[model_key]:
+            test_tpr_at_fpr = []
+            for curve in test_roc_curves:
+                fpr = curve['fpr']
+                tpr = curve['tpr']
+                idx = np.where(fpr <= target_fpr)[0]
+                if len(idx) > 0:
+                    tpr_value = tpr[idx[-1]]
+                else:
+                    tpr_value = 0.0
+                test_tpr_at_fpr.append(tpr_value)
+            tpr_at_fpr[model_key].append(test_tpr_at_fpr)
+    return tpr_at_fpr
 
 if __name__ == "__main__":
     stat_test_name = "MNIST_pref"
@@ -206,16 +204,9 @@ if __name__ == "__main__":
     tests_train_accuracies = compute_accuracies(tests_eval_train, labels["train"])
     tests_target_accuracies = compute_accuracies(tests_eval_train, labels["train"], subset=target_indices)
 
-    # shadow_target_losses = compute_shadow_losses_dists(initial_eval_train, labels["train"], subset=target_indices, global_var=True)
-    # lira_target_scores = compute_lira_scores(
-    #     shadow_target_losses["shadow_in"], shadow_target_losses["shadow_out"], tests_eval_train, labels["train"], subset=target_indices)
-    
-    # shadow_test_losses = compute_shadow_losses_dists(initial_eval_test, labels["test"], global_var=True)
-    # lira_test_scores = compute_lira_scores(
-    #     shadow_test_losses["shadow_in"], shadow_test_losses["shadow_out"], tests_eval_test, labels["test"])
     shadow_target_losses = compute_shadow_losses(initial_eval_train, labels["train"], subset=target_indices)
     shadow_test_losses = compute_shadow_losses(initial_eval_test, labels["test"])
-    shadow_target_dists, shadow_test_dists = compute_shadow_losses_dists(shadow_target_losses, shadow_test_losses, global_var=False)
+    shadow_target_dists, shadow_test_dists = compute_shadow_losses_dists(shadow_target_losses, shadow_test_losses, global_var=True)
     lira_target_scores = compute_lira_scores(
         shadow_target_dists['shadow_in'], shadow_target_dists['shadow_out'], tests_eval_train, labels["train"], subset=target_indices)
     lira_test_scores = compute_lira_scores(
@@ -226,6 +217,17 @@ if __name__ == "__main__":
     plt.plot(roc_curves['reset'][1][0]['fpr'], roc_curves['reset'][1][0]['tpr'], label=f"Reset AUC={roc_curves['reset'][1][0]['auc']:.2f}")
     plt.plot(roc_curves['random_reset'][1][0]['fpr'], roc_curves['random_reset'][1][0]['tpr'], label=f"Random Reset AUC={roc_curves['random_reset'][1][0]['auc']:.2f}")
     plt.legend()
+    plt.show()
+
+    plt.plot(roc_curves['random_reset'][0][0]['fpr'], roc_curves['random_reset'][0][0]['tpr'], label=f"Trained AUC={roc_curves['random_reset'][0][0]['auc']:.2f}")
+    plt.plot(roc_curves['retrained'][1][0]['fpr'], roc_curves['retrained'][1][0]['tpr'], label=f"Retrained AUC={roc_curves['retrained'][1][0]['auc']:.2f}")
+    plt.plot(roc_curves['random_retrained'][1][0]['fpr'], roc_curves['random_retrained'][1][0]['tpr'], label=f"Random Retrained AUC={roc_curves['random_retrained'][1][0]['auc']:.2f}")
+    plt.legend()
+    plt.show()
+
+    tpr_at_1pct_fpr = compute_tpr_at_fpr(roc_curves, target_fpr=0.01)
+    plt.boxplot(tpr_at_1pct_fpr['retrained'])
+    plt.title("TPR at 1% FPR for Reset Attack")
     plt.show()
     
 
