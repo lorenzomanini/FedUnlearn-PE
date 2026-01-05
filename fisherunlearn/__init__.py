@@ -35,7 +35,7 @@ def set_mia_batch_size(batch_size):
     MIA_BATCH_SIZE = batch_size
 
 
-def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', stochastic_correction=False, use_converter=True):
+def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', stochastic_correction=False, use_converter=True, gamma_stochastic=1.0, momentum=None):
 
     global DEVICE
     global INFO_BATCH_SIZE
@@ -57,6 +57,12 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
         pass
     else:
         raise ValueError("Invalid method. Use 'diag_hessian', 'diag_ggn' or 'diag_ggn_mc'.")
+    
+    if momentum is None:
+        momentum = 1.0
+
+    if gamma_stochastic == 0:
+        stochastic_correction = False
 
     model = copy.deepcopy(model).to(DEVICE).eval()
     criterion = copy.deepcopy(criterion).to(DEVICE)
@@ -124,13 +130,10 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
 
             target_var = torch.var(target_grad, dim=0, unbiased=True)
             total_var = torch.var(total_grad, dim=0, unbiased=True)
+        
+            factor = gamma_stochastic / (INFO_BATCH_SIZE * momentum)
 
-            correction = target_var / (1 + total_var)
-
-            debug_info = correction / (target_hessian[name] / total_hessian[name])
-            debug_info = torch.nan_to_num(debug_info, nan=0.0, posinf=0.0, neginf=0.0)
-            print(f"Layer: {name}")
-            print(torch.linalg.norm(debug_info)/debug_info.numel())
+            correction = target_var / (1/factor + total_var)
 
             layer_info= torch.pow(target_hessian[name]/total_hessian[name] - correction, 2)
         else:
