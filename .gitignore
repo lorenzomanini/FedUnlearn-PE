@@ -10,3 +10,7 @@ sessions/*
 stat_tests/*
 resource_tests/*
 plots/*
+.venv/*
+.python-version
+requirements.txt
+requirements.in
