@@ -107,9 +107,11 @@ def compute_lira_scores(losses_in, losses_out, merged_results, labels, subset=No
 def compute_roc_curves(lira_member_scores, lira_nonmember_scores):
     roc_curves = {}
     for model_key in lira_member_scores.keys():
-        roc_curves[model_key] = []
+        roc_curves[model_key] = {'fpr': [], 'tpr': [], 'auc': []}
         for test_idx in range(len(lira_member_scores[model_key])):
-            test_roc_curves = []
+            test_roc_fprs = []
+            test_roc_tprs = []
+            test_roc_aucs = []
             for iter_idx in range(len(lira_member_scores[model_key][test_idx])):
                 member_scores = lira_member_scores[model_key][test_idx][iter_idx]
                 nonmember_scores = lira_nonmember_scores[model_key][test_idx][iter_idx]
@@ -119,19 +121,23 @@ def compute_roc_curves(lira_member_scores, lira_nonmember_scores):
                 labels = np.concatenate([np.ones(len(member_scores)), np.zeros(len(nonmember_scores))])
                 fpr, tpr, _ = roc_curve(labels, all_scores)
                 roc_auc = auc(fpr, tpr)
-                test_roc_curves.append({'fpr': fpr, 'tpr': tpr, 'auc': roc_auc})
-            roc_curves[model_key].append(test_roc_curves)
+                test_roc_fprs.append(fpr)
+                test_roc_tprs.append(tpr)
+                test_roc_aucs.append(roc_auc)
+            roc_curves[model_key]['fpr'].append(test_roc_fprs)
+            roc_curves[model_key]['tpr'].append(test_roc_tprs)
+            roc_curves[model_key]['auc'].append(test_roc_aucs)
     return roc_curves
 
 def compute_tpr_at_fpr(roc_curve_data, target_fpr=0.01):
     tpr_at_fpr = {}
     for model_key in roc_curve_data.keys():
         tpr_at_fpr[model_key] = []
-        for test_roc_curves in roc_curve_data[model_key]:
+        for i in range(len(roc_curve_data[model_key]['fpr'])):
             test_tpr_at_fpr = []
-            for curve in test_roc_curves:
-                fpr = curve['fpr']
-                tpr = curve['tpr']
+            for j in range(len(roc_curve_data[model_key]['fpr'][i])):
+                fpr = roc_curve_data[model_key]['fpr'][i][j]
+                tpr = roc_curve_data[model_key]['tpr'][i][j]
                 idx = np.where(fpr <= target_fpr)[0]
                 if len(idx) > 0:
                     tpr_value = tpr[idx[-1]]
@@ -142,7 +148,7 @@ def compute_tpr_at_fpr(roc_curve_data, target_fpr=0.01):
     return tpr_at_fpr
 
 if __name__ == "__main__":
-    stat_test_name = "MNIST_pref"
+    stat_test_name = "MNIST_pref (1)"
     stat_tests_path = "stat_tests/NEW_TESTER" 
     overload_num_tests = None  # Set to an integer to override the number of tests
 
@@ -189,47 +195,74 @@ if __name__ == "__main__":
             acc_tests_eval_train.append(dict(np.load(f)))
         with open(os.path.join(test_path, "extra_results.pkl"), "rb") as f:
             acc_tests_extra.append(pickle.load(f))
+
+    print("Unlearned models keys:", acc_tests_eval_test[0].keys())
+    print("Initial models keys:", acc_initial_eval_test[0].keys())
             
     initial_eval_test = merge_initial_results(acc_initial_eval_test)
     initial_eval_train = merge_initial_results(acc_initial_eval_train)
-    tests_eval_test = merge_results(acc_tests_eval_test)
-    tests_eval_train = merge_results(acc_tests_eval_train)
-    tests_extra = merge_results(acc_tests_extra)
+    unlearned_eval_test = merge_results(acc_tests_eval_test)
+    unlearned_eval_train = merge_results(acc_tests_eval_train)
+    unlearned_extra = merge_results(acc_tests_extra)
 
     # [model][test][repetition][entry]
 
     initial_test_accuracies = compute_accuracies(initial_eval_test, labels["test"])
     initial_train_accuracies = compute_accuracies(initial_eval_train, labels["train"])
-    tests_test_accuracies = compute_accuracies(tests_eval_test, labels["test"])
-    tests_train_accuracies = compute_accuracies(tests_eval_train, labels["train"])
-    tests_target_accuracies = compute_accuracies(tests_eval_train, labels["train"], subset=target_indices)
+    initial_target_accuracies = compute_accuracies(initial_eval_train, labels["train"], subset=target_indices)
+    unlearned_test_accuracies = compute_accuracies(unlearned_eval_test, labels["test"])
+    unlearned_train_accuracies = compute_accuracies(unlearned_eval_train, labels["train"])
+    unlearned_target_accuracies = compute_accuracies(unlearned_eval_train, labels["train"], subset=target_indices)
 
     shadow_target_losses = compute_shadow_losses(initial_eval_train, labels["train"], subset=target_indices)
     shadow_test_losses = compute_shadow_losses(initial_eval_test, labels["test"])
     shadow_target_dists, shadow_test_dists = compute_shadow_losses_dists(shadow_target_losses, shadow_test_losses, global_var=True)
-    lira_target_scores = compute_lira_scores(
-        shadow_target_dists['shadow_in'], shadow_target_dists['shadow_out'], tests_eval_train, labels["train"], subset=target_indices)
-    lira_test_scores = compute_lira_scores(
-        shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], tests_eval_test, labels["test"])
 
-    roc_curves = compute_roc_curves(lira_target_scores, lira_test_scores)
-    plt.plot(roc_curves['random_reset'][0][0]['fpr'], roc_curves['random_reset'][0][0]['tpr'], label=f"Trained AUC={roc_curves['random_reset'][0][0]['auc']:.2f}")
-    plt.plot(roc_curves['reset'][1][0]['fpr'], roc_curves['reset'][1][0]['tpr'], label=f"Reset AUC={roc_curves['reset'][1][0]['auc']:.2f}")
-    plt.plot(roc_curves['random_reset'][1][0]['fpr'], roc_curves['random_reset'][1][0]['tpr'], label=f"Random Reset AUC={roc_curves['random_reset'][1][0]['auc']:.2f}")
-    plt.legend()
-    plt.show()
 
-    plt.plot(roc_curves['random_reset'][0][0]['fpr'], roc_curves['random_reset'][0][0]['tpr'], label=f"Trained AUC={roc_curves['random_reset'][0][0]['auc']:.2f}")
-    plt.plot(roc_curves['retrained'][1][0]['fpr'], roc_curves['retrained'][1][0]['tpr'], label=f"Retrained AUC={roc_curves['retrained'][1][0]['auc']:.2f}")
-    plt.plot(roc_curves['random_retrained'][1][0]['fpr'], roc_curves['random_retrained'][1][0]['tpr'], label=f"Random Retrained AUC={roc_curves['random_retrained'][1][0]['auc']:.2f}")
-    plt.legend()
-    plt.show()
+    unlearned_lira_target = compute_lira_scores(
+        shadow_target_dists['shadow_in'], shadow_target_dists['shadow_out'], unlearned_eval_train, labels["train"], subset=target_indices)
+    unlearned_lira_test = compute_lira_scores(
+        shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], unlearned_eval_test, labels["test"])
+    unlearned_roc_curves = compute_roc_curves(unlearned_lira_target, unlearned_lira_test)
 
-    tpr_at_1pct_fpr = compute_tpr_at_fpr(roc_curves, target_fpr=0.01)
-    plt.boxplot(tpr_at_1pct_fpr['retrained'])
-    plt.title("TPR at 1% FPR for Reset Attack")
-    plt.show()
+    initial_lira_target = compute_lira_scores(
+        shadow_target_dists['shadow_in'], shadow_target_dists['shadow_out'], initial_eval_train, labels["train"], subset=target_indices)
+    initial_lira_test = compute_lira_scores(
+        shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], initial_eval_test, labels["test"])
+    initial_roc_curves = compute_roc_curves(initial_lira_target, initial_lira_test)
+
+    unlearn_idx = 1  # Change this index to analyze different unlearning tests
+    test_idx = 0 # Change this index to analyze different test samples
+    plt.plot(initial_roc_curves['trained']['fpr'][0][test_idx], initial_roc_curves['trained']['tpr'][0][test_idx], label='Trained')
+    plt.plot(initial_roc_curves['shadow_out']['fpr'][0][test_idx], initial_roc_curves['shadow_out']['tpr'][0][test_idx], label='Benchmark')
     
+    plt.plot(unlearned_roc_curves['reset']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['reset']['tpr'][unlearn_idx][test_idx], label='Reset', linestyle='--')
+    plt.plot(unlearned_roc_curves['random_reset']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['random_reset']['tpr'][unlearn_idx][test_idx], label='Random Reset', linestyle=':')
+    plt.plot(unlearned_roc_curves['retrained']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['retrained']['tpr'][unlearn_idx][test_idx], label='Retrained', linestyle='--')
+    plt.plot(unlearned_roc_curves['random_retrained']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['random_retrained']['tpr'][unlearn_idx][test_idx], label='Random Retrained', linestyle=':')
+
+    plt.title('ROC Curves')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.legend()
+    plt.show()
+
+    unlearned_tpr_at_fpr = compute_tpr_at_fpr(unlearned_roc_curves, target_fpr=0.01)
+    initial_tpr_at_fpr = compute_tpr_at_fpr(initial_roc_curves, target_fpr=0.01)
+
+    plt.boxplot(initial_tpr_at_fpr['trained'])
+    plt.title('TPR at FPR=0.01 for Trained Model')
+    plt.ylabel('TPR at FPR=0.01')
+    plt.show()
+    print("Initial Trained TPR at FPR=0.01:", np.mean(initial_tpr_at_fpr['trained'][0]), "±", np.std(initial_tpr_at_fpr['trained'][0]))
+    
+    plt.boxplot(unlearned_tpr_at_fpr['reset'], tick_labels=[f"{np.average(perc):.2f}%" for perc in unlearned_extra['reset_params_percentage']])
+    plt.title('TPR at FPR=0.01 for Reset Unlearning')
+    plt.xlabel('Unlearning Tests')
+    plt.ylabel('TPR at FPR=0.01')
+    plt.show()
+
+
 
     
     
