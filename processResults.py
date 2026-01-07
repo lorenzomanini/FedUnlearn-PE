@@ -64,9 +64,9 @@ def compute_shadow_losses_dists(losses_members, losses_nonmembers, global_var=Fa
         avg_nonmember = np.mean(losses_nonmembers[model_key], axis=0)
         if global_var:
             losses = np.concatenate([losses_members[model_key], losses_nonmembers[model_key]], axis=1)
-            var = np.std(losses)
-            std_member = var
-            std_nonmember = var
+            std = np.std(losses)
+            std_member = std
+            std_nonmember = std
         else:
             std_member = np.std(losses_members[model_key], axis=0)
             std_nonmember = np.std(losses_nonmembers[model_key], axis=0)
@@ -146,6 +146,12 @@ def compute_tpr_at_fpr(roc_curve_data, target_fpr=0.01):
                 test_tpr_at_fpr.append(tpr_value)
             tpr_at_fpr[model_key].append(test_tpr_at_fpr)
     return tpr_at_fpr
+
+def plot_error_bars(x, y, **kwargs):
+    x_mean = np.mean(x, axis=0)
+    y_mean = np.mean(y, axis=0)
+    y_std = np.std(y, axis=0)
+    plt.errorbar(x_mean, y_mean, yerr=y_std, **kwargs)
 
 if __name__ == "__main__":
     stat_test_name = "MNIST_pref (1)"
@@ -231,7 +237,7 @@ if __name__ == "__main__":
         shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], initial_eval_test, labels["test"])
     initial_roc_curves = compute_roc_curves(initial_lira_target, initial_lira_test)
 
-    unlearn_idx = 1  # Change this index to analyze different unlearning tests
+    unlearn_idx = 0  # Change this index to analyze different unlearning tests
     test_idx = 0 # Change this index to analyze different test samples
     plt.plot(initial_roc_curves['trained']['fpr'][0][test_idx], initial_roc_curves['trained']['tpr'][0][test_idx], label='Trained')
     plt.plot(initial_roc_curves['shadow_out']['fpr'][0][test_idx], initial_roc_curves['shadow_out']['tpr'][0][test_idx], label='Benchmark')
@@ -247,20 +253,32 @@ if __name__ == "__main__":
     plt.legend()
     plt.show()
 
-    unlearned_tpr_at_fpr = compute_tpr_at_fpr(unlearned_roc_curves, target_fpr=0.01)
-    initial_tpr_at_fpr = compute_tpr_at_fpr(initial_roc_curves, target_fpr=0.01)
+    target_fpr = 0.001
+
+    unlearned_tpr_at_fpr = compute_tpr_at_fpr(unlearned_roc_curves, target_fpr=target_fpr)
+    initial_tpr_at_fpr = compute_tpr_at_fpr(initial_roc_curves, target_fpr=target_fpr)
 
     plt.boxplot(initial_tpr_at_fpr['trained'])
-    plt.title('TPR at FPR=0.01 for Trained Model')
-    plt.ylabel('TPR at FPR=0.01')
+    plt.title(f'TPR at FPR={target_fpr*100}% for Trained Model')
+    plt.ylabel(f'TPR at FPR={target_fpr*100}%')
     plt.show()
-    print("Initial Trained TPR at FPR=0.01:", np.mean(initial_tpr_at_fpr['trained'][0]), "±", np.std(initial_tpr_at_fpr['trained'][0]))
+    print(f"Initial Trained TPR at FPR={target_fpr*100}%:", np.mean(initial_tpr_at_fpr['trained'][0]), "±", np.std(initial_tpr_at_fpr['trained'][0]))
     
     plt.boxplot(unlearned_tpr_at_fpr['reset'], tick_labels=[f"{np.average(perc):.2f}%" for perc in unlearned_extra['reset_params_percentage']])
-    plt.title('TPR at FPR=0.01 for Reset Unlearning')
+    plt.title(f'TPR at FPR={target_fpr*100}% for Reset Unlearning')
     plt.xlabel('Unlearning Tests')
-    plt.ylabel('TPR at FPR=0.01')
+    plt.ylabel(f'TPR at FPR={target_fpr*100}%')
     plt.show()
+
+    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['reset'], fmt='-o', label='Reset')
+    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['random_reset'], fmt='-o', label='Random Reset')
+    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['retrained'], fmt='-o', label='Retrained')
+    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['random_retrained'], fmt='-o', label='Random Retrained')
+    plt.title(f'TPR at FPR={target_fpr*100}%')
+    plt.xlabel('Unlearning Percentage')
+    plt.ylabel(f'TPR at FPR={target_fpr*100}%')
+    plt.show()
+
 
 
 
