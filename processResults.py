@@ -15,16 +15,37 @@ def merge_results(accumulated_results):
     merged_results = {}
     for key in accumulated_results[0].keys():
         merged_results[key] = []
-        for i in range(len(accumulated_results[0][key])):
-            merged_results[key].append(
-                [accumulated_results[j][key][i] for j in range(len(accumulated_results))]
-            )
+        first_entry = accumulated_results[0][key]
+        if isinstance(first_entry, dict) and "pred" in first_entry:
+            num_tests = first_entry["pred"].shape[0]
+            for i in range(num_tests):
+                merged_results[key].append(
+                    [
+                        {
+                            "pred": accumulated_results[j][key]["pred"][i],
+                            "loss": accumulated_results[j][key]["loss"][i]
+                        }
+                        for j in range(len(accumulated_results))
+                    ]
+                )
+        else:
+            for i in range(len(first_entry)):
+                merged_results[key].append(
+                    [accumulated_results[j][key][i] for j in range(len(accumulated_results))]
+                )
     return merged_results
 
 def compute_accuracy(outputs, labels):
-    predictions = np.argmax(outputs, axis=1)
+    outputs = np.array(outputs)
+    predictions = outputs if outputs.ndim == 1 else np.argmax(outputs, axis=1)
     accuracy = np.mean(predictions == labels)
     return accuracy
+
+def get_predictions(outputs):
+    if isinstance(outputs, dict) and "pred" in outputs:
+        return np.array(outputs["pred"])
+    outputs = np.array(outputs)
+    return outputs if outputs.ndim == 1 else np.argmax(outputs, axis=1)
 
 def compute_accuracies(merged_results, labels, subset=None):
     labels = np.array(labels)
@@ -35,8 +56,8 @@ def compute_accuracies(merged_results, labels, subset=None):
         for test_outputs in merged_results[model_key]:
             test_accuracies = []
             for outputs in test_outputs:
-                outputs = np.array(outputs)
-                acc = compute_accuracy(outputs[idx], labels[idx])
+                predictions = get_predictions(outputs)
+                acc = np.mean(predictions[idx] == labels[idx])
                 test_accuracies.append(acc)
             accuracies[model_key].append(test_accuracies)
     return accuracies
@@ -49,8 +70,12 @@ def compute_shadow_losses(merged_initial_results, labels, subset=None):
     for model_key in merged_initial_results.keys():
         losses_list= []
         for outputs in merged_initial_results[model_key][0]:
-            outputs_tensor = torch.tensor(outputs)
-            loss = loss_fn(outputs_tensor[idx], labels_tensor[idx])
+            if isinstance(outputs, dict) and "loss" in outputs:
+                loss = np.array(outputs["loss"])[idx]
+                loss = torch.tensor(loss)
+            else:
+                outputs_tensor = torch.tensor(outputs)
+                loss = loss_fn(outputs_tensor[idx], labels_tensor[idx])
             losses_list.append(loss)
         losses_tensor = torch.stack(losses_list, dim=0)
         losses[model_key] = losses_tensor.numpy()
@@ -96,8 +121,11 @@ def compute_lira_scores(losses_in, losses_out, merged_results, labels, subset=No
         for test_outputs in merged_results[model_key]:
             test_lira_scores = []
             for outputs in test_outputs:
-                outputs_tensor = torch.tensor(outputs)
-                losses = loss_fn(outputs_tensor[idx], labels_tensor[idx]).numpy()
+                if isinstance(outputs, dict) and "loss" in outputs:
+                    losses = np.array(outputs["loss"])[idx]
+                else:
+                    outputs_tensor = torch.tensor(outputs)
+                    losses = loss_fn(outputs_tensor[idx], labels_tensor[idx]).numpy()
                 lira = log_gaussian_pdf(losses, losses_in['avg'], losses_in['std']) - log_gaussian_pdf(losses, losses_out['avg'], losses_out['std'])
                 test_lira_scores.append(lira)
 
@@ -153,9 +181,72 @@ def plot_error_bars(x, y, **kwargs):
     y_std = np.std(y, axis=0)
     plt.errorbar(x_mean, y_mean, yerr=y_std, **kwargs)
 
+def unpack_eval_results(npz_dict):
+    if any("__" in key for key in npz_dict.keys()):
+        unpacked = {}
+        for key, value in npz_dict.items():
+            if "__" not in key:
+                continue
+            model_key, suffix = key.split("__", 1)
+            if suffix not in {"pred", "loss"}:
+                continue
+            unpacked.setdefault(model_key, {})[suffix] = value
+        if unpacked:
+            return unpacked
+    return npz_dict
+
+def summarize_baseline(values):
+    values = np.array(values)
+    return float(np.mean(values)), float(np.std(values))
+
+def add_baseline_band(ax, mean, std, label, color):
+    ax.axhline(mean, color=color, linewidth=1.6, label=label)
+    if std > 0:
+        ax.axhspan(mean - std, mean + std, color=color, alpha=0.12)
+
+def plot_metric_vs_unlearning(ax, x_values, metric_dict, label_map, ylabel, title, baselines=None):
+    x_values = np.array(x_values)
+    if x_values.ndim == 1:
+        x_mean = x_values
+    else:
+        x_mean = np.mean(x_values, axis=1)
+    for key, style in label_map.items():
+        if key not in metric_dict:
+            continue
+        y = np.array(metric_dict[key])
+        if y.ndim == 1:
+            y_mean = y
+            y_std = np.zeros_like(y_mean)
+        else:
+            if y.shape[0] != x_mean.shape[0] and y.shape[1] == x_mean.shape[0]:
+                y = y.T
+            y_mean = np.mean(y, axis=1)
+            y_std = np.std(y, axis=1)
+        sort_idx = np.argsort(x_mean)
+        ax.errorbar(
+            x_mean[sort_idx],
+            y_mean[sort_idx],
+            yerr=y_std[sort_idx],
+            label=style["label"],
+            linestyle=style.get("linestyle", "-"),
+            marker=style.get("marker", "o"),
+            linewidth=1.6,
+            markersize=5,
+            capsize=3
+        )
+    if baselines:
+        for baseline in baselines:
+            add_baseline_band(ax, baseline["mean"], baseline["std"], baseline["label"], baseline["color"])
+    ax.set_title(title)
+    ax.set_xlabel("Unlearning Percentage")
+    ax.set_ylabel(ylabel)
+    ax.grid(True, linewidth=0.5, alpha=0.6)
+    ax.legend(frameon=False)
+
 if __name__ == "__main__":
-    stat_test_name = "MNIST_pref (1)"
-    stat_tests_path = "stat_tests/NEW_TESTER" 
+    plt.style.use("seaborn-v0_8-whitegrid")
+    stat_test_name = "MNIST_pref"
+    stat_tests_path = "stat_tests/NEW_TESTER2" 
     overload_num_tests = None  # Set to an integer to override the number of tests
 
     stat_test_path = os.path.join(stat_tests_path, stat_test_name)
@@ -196,9 +287,9 @@ if __name__ == "__main__":
         with open(os.path.join(test_path, "initial_eval_train_results.pkl"), "rb") as f:
             acc_initial_eval_train.append(pickle.load(f))
         with open(os.path.join(test_path, "eval_test_results.npz"), "rb") as f:
-            acc_tests_eval_test.append(dict(np.load(f)))
+            acc_tests_eval_test.append(unpack_eval_results(dict(np.load(f))))
         with open(os.path.join(test_path, "eval_train_results.npz"), "rb") as f:
-            acc_tests_eval_train.append(dict(np.load(f)))
+            acc_tests_eval_train.append(unpack_eval_results(dict(np.load(f))))
         with open(os.path.join(test_path, "extra_results.pkl"), "rb") as f:
             acc_tests_extra.append(pickle.load(f))
 
@@ -237,47 +328,60 @@ if __name__ == "__main__":
         shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], initial_eval_test, labels["test"])
     initial_roc_curves = compute_roc_curves(initial_lira_target, initial_lira_test)
 
-    unlearn_idx = 0  # Change this index to analyze different unlearning tests
-    test_idx = 0 # Change this index to analyze different test samples
-    plt.plot(initial_roc_curves['trained']['fpr'][0][test_idx], initial_roc_curves['trained']['tpr'][0][test_idx], label='Trained')
-    plt.plot(initial_roc_curves['shadow_out']['fpr'][0][test_idx], initial_roc_curves['shadow_out']['tpr'][0][test_idx], label='Benchmark')
-    
-    plt.plot(unlearned_roc_curves['reset']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['reset']['tpr'][unlearn_idx][test_idx], label='Reset', linestyle='--')
-    plt.plot(unlearned_roc_curves['random_reset']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['random_reset']['tpr'][unlearn_idx][test_idx], label='Random Reset', linestyle=':')
-    plt.plot(unlearned_roc_curves['retrained']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['retrained']['tpr'][unlearn_idx][test_idx], label='Retrained', linestyle='--')
-    plt.plot(unlearned_roc_curves['random_retrained']['fpr'][unlearn_idx][test_idx], unlearned_roc_curves['random_retrained']['tpr'][unlearn_idx][test_idx], label='Random Retrained', linestyle=':')
-
-    plt.title('ROC Curves')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.legend()
-    plt.show()
-
     target_fpr = 0.001
 
     unlearned_tpr_at_fpr = compute_tpr_at_fpr(unlearned_roc_curves, target_fpr=target_fpr)
     initial_tpr_at_fpr = compute_tpr_at_fpr(initial_roc_curves, target_fpr=target_fpr)
 
-    plt.boxplot(initial_tpr_at_fpr['trained'])
-    plt.title(f'TPR at FPR={target_fpr*100}% for Trained Model')
-    plt.ylabel(f'TPR at FPR={target_fpr*100}%')
-    plt.show()
-    print(f"Initial Trained TPR at FPR={target_fpr*100}%:", np.mean(initial_tpr_at_fpr['trained'][0]), "±", np.std(initial_tpr_at_fpr['trained'][0]))
-    
-    plt.boxplot(unlearned_tpr_at_fpr['reset'], tick_labels=[f"{np.average(perc):.2f}%" for perc in unlearned_extra['reset_params_percentage']])
-    plt.title(f'TPR at FPR={target_fpr*100}% for Reset Unlearning')
-    plt.xlabel('Unlearning Tests')
-    plt.ylabel(f'TPR at FPR={target_fpr*100}%')
+    accuracy_styles = {
+        "reset": {"label": "Reset", "linestyle": "-", "marker": "o"},
+        "random_reset": {"label": "Random Reset", "linestyle": "--", "marker": "s"},
+        "retrained": {"label": "Retrained", "linestyle": "-", "marker": "D"},
+        "random_retrained": {"label": "Random Retrained", "linestyle": "--", "marker": "^"},
+    }
+
+    trained_acc_mean, trained_acc_std = summarize_baseline(initial_test_accuracies["trained"][0])
+    benchmark_acc_mean, benchmark_acc_std = summarize_baseline(initial_test_accuracies["shadow_out"][0])
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    plot_metric_vs_unlearning(
+        ax=ax,
+        x_values=unlearned_extra["reset_params_percentage"],
+        metric_dict=unlearned_test_accuracies,
+        label_map=accuracy_styles,
+        ylabel="Test Accuracy",
+        title="Test Accuracy vs Unlearning Percentage",
+        baselines=[
+            {"mean": trained_acc_mean, "std": trained_acc_std, "label": "Trained Baseline", "color": "tab:blue"},
+            {"mean": benchmark_acc_mean, "std": benchmark_acc_std, "label": "Benchmark Baseline", "color": "tab:gray"},
+        ],
+    )
+    plt.tight_layout()
     plt.show()
 
-    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['reset'], fmt='-o', label='Reset')
-    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['random_reset'], fmt='-o', label='Random Reset')
-    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['retrained'], fmt='-o', label='Retrained')
-    plot_error_bars(unlearned_extra['reset_params_percentage'], unlearned_tpr_at_fpr['random_retrained'], fmt='-o', label='Random Retrained')
-    plt.title(f'TPR at FPR={target_fpr*100}%')
-    plt.xlabel('Unlearning Percentage')
-    plt.ylabel(f'TPR at FPR={target_fpr*100}%')
+    trained_tpr_mean, trained_tpr_std = summarize_baseline(initial_tpr_at_fpr["trained"][0])
+    benchmark_tpr_mean, benchmark_tpr_std = summarize_baseline(initial_tpr_at_fpr["shadow_out"][0])
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    plot_metric_vs_unlearning(
+        ax=ax,
+        x_values=unlearned_extra["reset_params_percentage"],
+        metric_dict=unlearned_tpr_at_fpr,
+        label_map=accuracy_styles,
+        ylabel=f"TPR at FPR={target_fpr*100:.2f}%",
+        title=f"TPR at FPR={target_fpr*100:.2f}% vs Unlearning Percentage",
+        baselines=[
+            {"mean": trained_tpr_mean, "std": trained_tpr_std, "label": "Trained Baseline", "color": "tab:blue"},
+            {"mean": benchmark_tpr_mean, "std": benchmark_tpr_std, "label": "Benchmark Baseline", "color": "tab:gray"},
+        ],
+    )
+    plt.tight_layout()
     plt.show()
+
+    print(
+        f"Trained baseline TPR at FPR={target_fpr*100:.2f}%: "
+        f"{trained_tpr_mean:.4f} ± {trained_tpr_std:.4f}"
+    )
 
 
 

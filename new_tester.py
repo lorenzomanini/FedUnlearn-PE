@@ -76,15 +76,23 @@ def compute_accuracy(model, dataset):
 
 def evaluate_model(model, dataset):
     dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
-    outputs = []
+    preds = []
+    losses = []
+    loss_fn = nn.CrossEntropyLoss(reduction='none')
     model.to(DEVICE)
     with torch.no_grad():
-        for images, _ in dataloader:
-            images = images.to(DEVICE)
+        for images, labels in dataloader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
             output = model(images)
-            outputs.append(output.cpu())
+            batch_losses = loss_fn(output, labels)
+            batch_preds = torch.argmax(output, dim=1)
+            preds.append(batch_preds.cpu())
+            losses.append(batch_losses.cpu())
     model.cpu()
-    return torch.cat(outputs).numpy()
+    return {
+        "pred": torch.cat(preds).numpy(),
+        "loss": torch.cat(losses).numpy()
+    }
 
 
 class InitParamsDict(TypedDict):
@@ -705,14 +713,24 @@ def run_tests_iter(iter, arg):
             
     eval_test_results = {}
     for key in acc_eval_test_results[0].keys():
-        eval_test_results[key] = np.stack([acc_eval_test_results[i][key] for i in range(len(acc_eval_test_results))])
+        eval_test_results[f"{key}__pred"] = np.stack(
+            [acc_eval_test_results[i][key]["pred"] for i in range(len(acc_eval_test_results))]
+        )
+        eval_test_results[f"{key}__loss"] = np.stack(
+            [acc_eval_test_results[i][key]["loss"] for i in range(len(acc_eval_test_results))]
+        )
 
     with open(os.path.join(test_iter_path, "eval_test_results.npz"), 'wb') as f:
         np.savez(f, **eval_test_results)
 
     eval_train_results = {}
     for key in acc_eval_train_results[0].keys():
-        eval_train_results[key] = np.stack([acc_eval_train_results[i][key] for i in range(len(acc_eval_train_results))])
+        eval_train_results[f"{key}__pred"] = np.stack(
+            [acc_eval_train_results[i][key]["pred"] for i in range(len(acc_eval_train_results))]
+        )
+        eval_train_results[f"{key}__loss"] = np.stack(
+            [acc_eval_train_results[i][key]["loss"] for i in range(len(acc_eval_train_results))]
+        )
 
     with open(os.path.join(test_iter_path, "eval_train_results.npz"), 'wb') as f:
         np.savez(f, **eval_train_results)
