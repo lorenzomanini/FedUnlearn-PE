@@ -11,6 +11,7 @@ stat_tests/*
 resource_tests/*
 plots/*
 .venv/*
+.claude/*
 .python-version
 requirements.txt
 requirements.in
