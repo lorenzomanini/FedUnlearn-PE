@@ -35,7 +35,7 @@ def set_mia_batch_size(batch_size):
     MIA_BATCH_SIZE = batch_size
 
 
-def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', stochastic_correction=False, use_converter=True, gamma_stochastic=1.0, momentum=None):
+def compute_client_information(client_idx, model, criterion, datasets_list, method='diag_ggn', stochastic_correction=False, use_converter=True, gamma_stochastic=1.0, momentum=None, learning_rate=None):
 
     global DEVICE
     global INFO_BATCH_SIZE
@@ -57,9 +57,6 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
         pass
     else:
         raise ValueError("Invalid method. Use 'diag_hessian', 'diag_ggn' or 'diag_ggn_mc'.")
-    
-    if momentum is None:
-        momentum = 1.0
 
     if gamma_stochastic == 0:
         stochastic_correction = False
@@ -131,7 +128,7 @@ def compute_client_information(client_idx, model, criterion, datasets_list, meth
             target_var = torch.var(target_grad, dim=0, unbiased=True)
             total_var = torch.var(total_grad, dim=0, unbiased=True)
         
-            factor = gamma_stochastic / (INFO_BATCH_SIZE * momentum)
+            factor = (gamma_stochastic * learning_rate) / (INFO_BATCH_SIZE * momentum)
 
             correction = target_var / (1/factor + total_var)
 

@@ -89,12 +89,12 @@ def compute_shadow_losses_dists(losses_members, losses_nonmembers, global_var=Fa
         avg_nonmember = np.mean(losses_nonmembers[model_key], axis=0)
         if global_var:
             losses = np.concatenate([losses_members[model_key], losses_nonmembers[model_key]], axis=1)
-            std = np.std(losses)
+            std = np.std(losses, ddof=1)
             std_member = std
             std_nonmember = std
         else:
-            std_member = np.std(losses_members[model_key], axis=0)
-            std_nonmember = np.std(losses_nonmembers[model_key], axis=0)
+            std_member = np.std(losses_members[model_key], axis=0, ddof=1)
+            std_nonmember = np.std(losses_nonmembers[model_key], axis=0, ddof=1)
         member_dists[model_key] = {
             'avg': avg_member,
             'std': std_member
@@ -246,8 +246,8 @@ def plot_metric_vs_unlearning(ax, x_values, metric_dict, label_map, ylabel, titl
 if __name__ == "__main__":
     plt.style.use("seaborn-v0_8-whitegrid")
     stat_test_name = "MNIST_pref"
-    stat_tests_path = "stat_tests/NEW_TESTER2" 
-    overload_num_tests = None  # Set to an integer to override the number of tests
+    stat_tests_path = "stat_tests/EXPERIMENTS" 
+    overload_num_tests = 1  # Set to an integer to override the number of tests
 
     stat_test_path = os.path.join(stat_tests_path, stat_test_name)
     if not os.path.exists(stat_test_path):
@@ -328,10 +328,32 @@ if __name__ == "__main__":
         shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], initial_eval_test, labels["test"])
     initial_roc_curves = compute_roc_curves(initial_lira_target, initial_lira_test)
 
-    target_fpr = 0.001
+    target_fpr = 0.01
 
     unlearned_tpr_at_fpr = compute_tpr_at_fpr(unlearned_roc_curves, target_fpr=target_fpr)
     initial_tpr_at_fpr = compute_tpr_at_fpr(initial_roc_curves, target_fpr=target_fpr)
+
+    # Plot ROC curves for initial models
+    plt.figure(figsize=(8, 6))
+    for model_key, style in {
+        "trained": {"label": "Trained", "linestyle": "-", "color": "tab:blue"},
+        "shadow_out": {"label": "Shadow Out", "linestyle": "--", "color": "tab:orange"},
+    }.items():
+        fpr_list = initial_roc_curves[model_key]['fpr'][0]
+        tpr_list = initial_roc_curves[model_key]['tpr'][0]
+        for fpr, tpr in zip(fpr_list, tpr_list):
+            plt.plot(fpr, tpr, linestyle=style["linestyle"], color=style["color"], alpha=0.3)
+        mean_fpr = np.linspace(0, 1, 100)
+        mean_tpr = np.mean([np.interp(mean_fpr, fpr, tpr) for fpr, tpr in zip(fpr_list, tpr_list)], axis=0)
+        plt.plot(mean_fpr, mean_tpr, linestyle=style["linestyle"], color=style["color"], label=style["label"], linewidth=2)
+    plt.plot([0, 1], [0, 1], color='gray', linestyle='--', label='Random Guess')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curves for Initial Models')
+    plt.legend(frameon=False)
+    plt.grid(True, linewidth=0.5, alpha=0.6)
+    plt.tight_layout()
+    plt.show()
 
     accuracy_styles = {
         "reset": {"label": "Reset", "linestyle": "-", "marker": "o"},

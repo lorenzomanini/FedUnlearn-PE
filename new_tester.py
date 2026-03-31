@@ -74,24 +74,41 @@ def compute_accuracy(model, dataset):
 
     return correct / total
 
+def logit_margin(z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """
+    z: (B, C) logits
+    y: (B,) int64 labels
+    returns: (B,) margins z_y - max_{j!=y} z_j
+    """
+    # true class logit
+    zy = z.gather(1, y.unsqueeze(1)).squeeze(1)  # (B,)
+
+    # top-2 logits and their class indices
+    top2_vals, top2_idx = z.topk(k=2, dim=1)     # (B,2), (B,2)
+
+    # best "other" logit: if top1 is true class -> take top2 else top1
+    top1_is_true = (top2_idx[:, 0] == y)
+    z_other = torch.where(top1_is_true, top2_vals[:, 1], top2_vals[:, 0])  # (B,)
+
+    return zy - z_other
+
 def evaluate_model(model, dataset):
     dataloader = DataLoader(dataset, batch_size=EVAL_BATCH_SIZE, shuffle=False)
     preds = []
-    losses = []
-    loss_fn = nn.CrossEntropyLoss(reduction='none')
+    margins = []
     model.to(DEVICE)
     with torch.no_grad():
         for images, labels in dataloader:
             images, labels = images.to(DEVICE), labels.to(DEVICE)
             output = model(images)
-            batch_losses = loss_fn(output, labels)
             batch_preds = torch.argmax(output, dim=1)
             preds.append(batch_preds.cpu())
-            losses.append(batch_losses.cpu())
+            batch_margins = logit_margin(output, labels)
+            margins.append(batch_margins.cpu())
     model.cpu()
     return {
         "pred": torch.cat(preds).numpy(),
-        "loss": torch.cat(losses).numpy()
+        "loss": torch.cat(margins).numpy()
     }
 
 
@@ -113,7 +130,8 @@ class InitParamsDict(TypedDict):
     poison: bool
     local_epochs: int
     participation_rate: float
-    lr: float
+    learning_rate: float
+    momentum: float
 
 class TestParamsDict(TypedDict):
     subtest: int
@@ -150,9 +168,6 @@ class Test():
         self.trainer_function = trainer_function
 
         train_epochs = init_params_dict['train_epochs']
-        info_use_converter = init_params_dict.get('info_use_converter', True)
-        hessian_method = init_params_dict.get('hessian_method', 'diag_ggn_mc')
-        stochastic_correction = init_params_dict.get('stochastic_correction', False)
 
         logging.info("Preparing subsets for training...")
         eval_split_ratio = 0.1
@@ -180,7 +195,7 @@ class Test():
         )
 
         logging.info("Computing information...")
-        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, stochastic_correction=stochastic_correction, use_converter=info_use_converter, method=hessian_method)
+        self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, stochastic_correction=init_params_dict.get('stochastic_correction', False), use_converter=init_params_dict.get('info_use_converter', True), method=init_params_dict['hessian_method'], learning_rate=init_params_dict['learning_rate'], momentum=init_params_dict['momentum'])
 
         logging.info("Training shadow_out model...") 
         shadow_out_model = self.trainer_function(
@@ -258,6 +273,8 @@ class Test():
         extra_results['num_total_params'] = self.num_total_params
         extra_results['num_reset_params'] = num_reset_params
         extra_results['reset_params_percentage'] = reset_params_percentage
+
+        logging.info(f"Percentage of reset parameters: {reset_params_percentage:.4f}% ({num_reset_params}/{self.num_total_params})")
         
 
         eval_test_results = {
@@ -532,7 +549,7 @@ def get_loss_class(init_params_dict):
     else:
         raise ValueError("Unsupported loss name")
     
-def simple_trainer(model, loss_fn, train_subsets, val_subsets, epochs):
+def simple_trainer(model, loss_fn, train_subsets, val_subsets, epochs, init_params_dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
 
@@ -542,7 +559,7 @@ def simple_trainer(model, loss_fn, train_subsets, val_subsets, epochs):
     dataloader = DataLoader(train_dataset, TRAIN_BATCH_SIZE, shuffle=True)
     val_dataloader = DataLoader(val_dataset, EVAL_BATCH_SIZE, shuffle=False)
     model.to(device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = torch.optim.SGD(model.parameters(), lr=init_params_dict['learning_rate'], momentum=init_params_dict['momentum'])
 
     for epoch in tqdm(range(epochs), desc="Training", unit="epoch", leave=False):     
         loss = None
@@ -652,7 +669,11 @@ def fedavg_trainer(model, loss_fn, subsets, epochs, comm_tracker=None, init_para
 def get_trainer_function(init_params_dict):
     trainer_name = init_params_dict['trainer_name']
     if trainer_name == 'sgd':
-        return simple_trainer
+        if 'learning_rate' not in init_params_dict:
+            init_params_dict['learning_rate'] = 0.01
+        if 'momentum' not in init_params_dict:
+            init_params_dict['momentum'] = 0.9
+        return functools.partial(simple_trainer, init_params_dict=init_params_dict)
     elif trainer_name == 'fedavg':
         return functools.partial(fedavg_trainer, init_params_dict=init_params_dict)
     else:

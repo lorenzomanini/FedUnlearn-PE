@@ -6,10 +6,10 @@ def generate_params_ranges(test_params_dict):
     # Tests with info percentage based resetting
     test_params_dict_0 = test_params_dict.copy()
     test_params_dict_0['subtest'] = 0
-    test_params_dict_0['unlearning_method'] = 'information'
+    test_params_dict_0['unlearning_method'] = 'parameters'
 
-    # percentages = [0,40,50,60]
-    percentages = np.arange(5, 95, 5)
+    # percentages = [5,10]
+    percentages = np.arange(0, 95, 10)
     test_params_dicts_0 = [test_params_dict_0.copy() for _ in range(len(percentages))]
     for i, percentage in enumerate(percentages):
         test_params_dicts_0[i]['unlearning_percentage'] = percentage
@@ -39,11 +39,12 @@ def generate_params_ranges(test_params_dict):
 
 if __name__ == "__main__":
 
-    save_path = './stat_tests/NEW_TESTER'
+    save_path = './stat_tests/NONDIAGONAL/'
 
-    num_tests = 20
-    num_workers = 4
+    num_tests = 4
+    num_workers = 1
     hessian_method = 'diag_ggn_mc'
+    stochastic_correction = False
 
     tester.set_batch_sizes(128,128,128,128)
 
@@ -61,12 +62,12 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 5,
+        'train_epochs': 10,
 
         'target_client': 0,
         'num_tests': num_tests,
         'hessian_method': hessian_method,
-        'stochastic_correction': True
+        'stochastic_correction': stochastic_correction
     }
 
     test_params_dict : TestParamsDict = {
@@ -75,7 +76,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # MNIST preferential
@@ -92,12 +93,12 @@ if __name__ == "__main__":
         'loss_name': 'cross_entropy',
 
         'trainer_name': 'sgd',
-        'train_epochs': 5,
+        'train_epochs': 6,
 
         'target_client': 0,
         'num_tests': num_tests,
         'hessian_method': hessian_method,
-        'stochastic_correction': True
+        'stochastic_correction': stochastic_correction
     }
 
     test_params_dict : TestParamsDict = {
@@ -136,7 +137,7 @@ if __name__ == "__main__":
 
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 preferential
@@ -165,7 +166,7 @@ if __name__ == "__main__":
         }
     
     test_params_dicts = generate_params_ranges(test_params_dict)
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST random
@@ -196,7 +197,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # FMNIST preferential
@@ -227,7 +228,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR100 random
@@ -256,7 +257,7 @@ if __name__ == "__main__":
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR100 preferential
@@ -285,7 +286,7 @@ if __name__ == "__main__":
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # POISON ATTACK
