@@ -28,6 +28,8 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 
 from typing import TypedDict, Literal
 
+NUM_POWER_ITERS = int(os.environ.get("NUM_POWER_ITERS", "5"))
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 EVAL_BATCH_SIZE = 5000
 TRAIN_BATCH_SIZE = 5000
@@ -227,7 +229,7 @@ class Test():
         }
 
         logging.info("Computing client information...")
-        self.client_information = estimate_diag_commuting_backpack(self.trained_model.to(DEVICE), self.total_loader, self.client_loader, loss_class(), 10, DEVICE, 5 )["diag_by_name"]
+        self.client_information = estimate_diag_commuting_backpack(self.trained_model.to(DEVICE), self.total_loader, self.client_loader, loss_class(), 10, DEVICE, NUM_POWER_ITERS )["diag_by_name"]
 
     def plot_information_parameters_tradeoff(self, method='information', whitelist=None, blacklist=None):
         """Plot the information-vs-parameters tradeoff for this test's client information."""

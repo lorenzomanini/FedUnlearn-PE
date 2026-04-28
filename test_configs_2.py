@@ -1,4 +1,5 @@
 import numpy as np
+import os
 import new_new_tester as tester
 from new_new_tester import run_repeated_tests, InitParamsDict, TestParamsDict
 
@@ -16,7 +17,7 @@ def generate_params_ranges(test_params_dict):
 
 if __name__ == "__main__":
 
-    save_path = './stat_tests/EXPERIMENTS/'
+    save_path = f'./stat_tests/EXPERIMENTS/power_iters_{os.environ.get("NUM_POWER_ITERS", "5")}/'
 
     num_tests = 20
     num_workers = 1
