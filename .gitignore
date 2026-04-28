@@ -15,3 +15,4 @@ plots/*
 .python-version
 requirements.txt
 requirements.in
+old/*
