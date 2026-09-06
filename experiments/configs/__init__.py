@@ -1,0 +1,2 @@
+"""Generation-specific compatibility configurations."""
+
