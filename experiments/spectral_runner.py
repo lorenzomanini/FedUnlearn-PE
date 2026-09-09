@@ -45,6 +45,7 @@ def set_device(device):
     global DEVICE
     DEVICE = device
     fisherunlearn.set_device(device)
+    _shared_runner.set_device(device)
 
 def set_batch_sizes(info_batch_size=INFO_BATCH_SIZE, mia_batch_size=MIA_BATCH_SIZE, eval_batch_size=EVAL_BATCH_SIZE, train_batch_size=TRAIN_BATCH_SIZE):
     global INFO_BATCH_SIZE, MIA_BATCH_SIZE, EVAL_BATCH_SIZE, TRAIN_BATCH_SIZE
@@ -54,6 +55,9 @@ def set_batch_sizes(info_batch_size=INFO_BATCH_SIZE, mia_batch_size=MIA_BATCH_SI
     TRAIN_BATCH_SIZE = train_batch_size
     fisherunlearn.set_info_batch_size(info_batch_size)
     fisherunlearn.set_mia_batch_size(mia_batch_size)
+    _shared_runner.set_batch_sizes(
+        info_batch_size, mia_batch_size, eval_batch_size, train_batch_size
+    )
 
 
 from experiments.config import RevisedInitParamsDict as InitParamsDict, TestParamsDict

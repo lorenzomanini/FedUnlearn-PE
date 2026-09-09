@@ -1,7 +1,32 @@
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 from backpack import backpack, extend
+from backpack.core.derivatives.adaptive_avg_pool_nd import AdaptiveAvgPool2dDerivatives
+from backpack.custom_module.branching import SumModule
 from backpack.extensions import HMP
+from backpack.extensions.curvmatprod.hmp.batchnorm1d import HMPBatchNorm1d
+from backpack.extensions.curvmatprod.hmp.hmpbase import HMPBase
+from backpack.extensions.module_extension import ModuleExtension
+
+
+class _HMPSum(ModuleExtension):
+    def backpropagate(self, ext, module, g_inp, g_out, backproped):
+        return backproped
+
+
+class _GraphHMP(HMP):
+    def __init__(self):
+        super().__init__()
+        self.set_module_extension(SumModule, _HMPSum())
+        self.set_module_extension(nn.BatchNorm2d, HMPBatchNorm1d())
+        self.set_module_extension(
+            nn.AdaptiveAvgPool2d,
+            HMPBase(AdaptiveAvgPool2dDerivatives()),
+        )
+
+    def accumulate_backpropagated_quantities(self, existing, other):
+        return lambda mat: existing(mat) + other(mat)
 
 
 # ============================================================
@@ -119,7 +144,7 @@ def make_block_hessian_matvec(model, dataloader, loss_fn, device):
             model.zero_grad(set_to_none=True)
             loss = loss_fn(model(x), y)   # batch mean
 
-            with backpack(HMP()):
+            with backpack(_GraphHMP()):
                 loss.backward()
 
             V_blocks = split_columns_to_param_blocks(V, shapes, numels)
@@ -193,6 +218,7 @@ def estimate_diag_commuting_backpack(
       3. reconstruct diagonal:
            sum_k ((lambda_a_k / lambda_k)^2 * u_k^2)
     """
+    model = extend(model, use_converter=True)
     params = get_trainable_params(model)
     dtype = params[0].dtype
 

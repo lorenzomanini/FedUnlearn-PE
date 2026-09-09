@@ -52,7 +52,7 @@ if __name__ == "__main__":
 
     test_params_dicts = generate_params_ranges(test_params_dict)
 
-    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # MNIST random
@@ -113,7 +113,7 @@ if __name__ == "__main__":
         }
 
     test_params_dicts = generate_params_ranges(test_params_dict)
-    # run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
+    run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=num_workers)
 
 
     # CIFAR10 preferential
