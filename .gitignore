@@ -18,3 +18,4 @@ requirements.in
 old/*
 docs/*
 tests/*
+!tests/test_spectral_hmp.py

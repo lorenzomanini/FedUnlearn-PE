@@ -109,7 +109,7 @@ def unflatten_like(vec, shapes, numels):
 # BackPACK block-Hessian matrix product over a whole loader
 # ============================================================
 
-def make_block_hessian_matvec(model, dataloader, loss_fn, device):
+def make_block_hessian_matvec(model, dataloader, loss_fn, device, hmp_chunk_size=1):
     """
     Returns a function matmat(V) that computes block-diagonal Hessian
     times multiple vectors at once.
@@ -119,7 +119,15 @@ def make_block_hessian_matvec(model, dataloader, loss_fn, device):
 
     The Hessian is that of the average loss over the whole dataloader,
     but approximated by BackPACK's block-diagonal HMP.
+
+    Process at most hmp_chunk_size direction vectors in each BackPACK call.
+    Convolution weight products otherwise build intermediates proportional to
+    both the data batch size and the number of directions, which can exceed
+    CUDA's 32-bit indexing limit. Chunking preserves the operator and rank.
     """
+    if isinstance(hmp_chunk_size, bool) or not isinstance(hmp_chunk_size, int) or hmp_chunk_size < 1:
+        raise ValueError("hmp_chunk_size must be a positive integer")
+
     model = extend(model)
     loss_fn = extend(loss_fn)
 
@@ -147,16 +155,16 @@ def make_block_hessian_matvec(model, dataloader, loss_fn, device):
             with backpack(_GraphHMP()):
                 loss.backward()
 
-            V_blocks = split_columns_to_param_blocks(V, shapes, numels)
-
-            HV_blocks = []
-            for p, v_block in zip(params, V_blocks):
-                HV_blocks.append(p.hmp(v_block).detach())
-
-            HV = merge_param_blocks_to_columns(HV_blocks)
-
             bs = x.shape[0]
-            out += bs * HV
+            for start in range(0, r, hmp_chunk_size):
+                stop = min(start + hmp_chunk_size, r)
+                V_blocks = split_columns_to_param_blocks(V[:, start:stop], shapes, numels)
+                HV_blocks = [
+                    p.hmp(v_block.contiguous()).detach()
+                    for p, v_block in zip(params, V_blocks)
+                ]
+                HV = merge_param_blocks_to_columns(HV_blocks)
+                out[:, start:stop].add_(HV, alpha=bs)
             total_count += bs
 
         return out / total_count
@@ -206,6 +214,7 @@ def estimate_diag_commuting_backpack(
     rank,
     device,
     num_power_iters=8,
+    hmp_chunk_size=1,
 ):
     """
     Fast approximation of diag((H^+ H_a)^2) under:
@@ -217,6 +226,9 @@ def estimate_diag_commuting_backpack(
       2. project block-diagonal H_a onto those eigenvectors
       3. reconstruct diagonal:
            sum_k ((lambda_a_k / lambda_k)^2 * u_k^2)
+
+    hmp_chunk_size controls the number of direction vectors processed together,
+    independently of rank and the data loaders' batch sizes.
     """
     model = extend(model, use_converter=True)
     params = get_trainable_params(model)
@@ -224,10 +236,10 @@ def estimate_diag_commuting_backpack(
 
     # block-diagonal Hessian operators
     H_matmat, shapes, numels, total_params = make_block_hessian_matvec(
-        model, loader_full, loss_fn, device
+        model, loader_full, loss_fn, device, hmp_chunk_size=hmp_chunk_size
     )
     Ha_matmat, _, _, _ = make_block_hessian_matvec(
-        model, loader_a, loss_fn, device
+        model, loader_a, loss_fn, device, hmp_chunk_size=hmp_chunk_size
     )
 
     # top eigenpairs of H

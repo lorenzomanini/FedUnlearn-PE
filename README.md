@@ -52,3 +52,29 @@ with:
 The faithful shadow-bank path currently supports the centralized `sgd` runner.
 The legacy runner now rejects its former single-benchmark approximation when a
 test requests `LiRA`, rather than reporting it as the paper's attack.
+
+## Checking the spectral calculation before a long run
+
+Inside an allocated GPU job, with the same modules and Python environment as
+`queue.sh`, run:
+
+```bash
+srun venv/bin/python -m experiments.spectral_smoke
+```
+
+This checks one ResNet18 Hessian matrix product with synthetic CIFAR-sized data,
+batch size 128, and rank 10, without training the LiRA shadow bank. It prints
+`PASS` if the output has the expected shape and finite values. It does not
+validate the full training or unlearning pipeline.
+
+The spectral estimator processes one direction vector per BackPACK HMP call by
+default. This reduces convolution intermediates that can otherwise trigger
+`canUse32BitIndexMath` failures when all rank-10 directions are processed at once.
+The rank, data batch size, and number of power iterations are unchanged. The
+optional `hmp_chunk_size` estimator argument controls this vector batch size.
+
+Run the small CPU numerical regression checks with:
+
+```bash
+python -m unittest discover -s tests -p 'test_spectral_hmp.py' -v
+```
