@@ -21,6 +21,7 @@ EXTRA_RESULTS = "extra_results.pkl"
 LIRA_SHADOW_BANK = "lira_shadow_bank.npz"
 INITIAL_LIRA_RESULTS = "initial_lira_results.pkl"
 EVAL_LIRA_RESULTS = "eval_lira_results.npz"
+LIRA_CASE_INDICES = "lira_case_indices.pkl"
 
 
 def dump_pickle(directory, basename, value):

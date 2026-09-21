@@ -420,12 +420,10 @@ def plot_experiment_results(test_path, num_tests=None, target_fpr=0.001):
     with open(os.path.join(test_path, "clients_indices.pkl"), "rb") as f:
         client_indices = pickle.load(f)
     shadow_bank_path = os.path.join(test_path, persistence.LIRA_SHADOW_BANK)
-    if not os.path.exists(shadow_bank_path):
-        raise FileNotFoundError(
-            "This experiment predates the explicit online-LiRA shadow bank; regenerate it."
-        )
-    with open(shadow_bank_path, "rb") as f:
-        shadow_bank = dict(np.load(f))
+    shadow_bank = None
+    if os.path.exists(shadow_bank_path):
+        with open(shadow_bank_path, "rb") as f:
+            shadow_bank = dict(np.load(f))
 
     saved_params = {}
     params_path = os.path.join(test_path, "init_params.pkl")
@@ -440,7 +438,8 @@ def plot_experiment_results(test_path, num_tests=None, target_fpr=0.001):
 
     acc_initial_eval_test, acc_initial_eval_train = [], []
     acc_tests_eval_test, acc_tests_eval_train, acc_tests_extra = [], [], []
-    initial_lira_results, tests_lira_results = [], []
+    initial_lira_results, tests_lira_results, lira_reset_percentages = [], [], []
+    lira_case_ids = []
 
     for i in range(num_tests):
         iter_path = os.path.join(test_path, f"test_{i}")
@@ -454,11 +453,35 @@ def plot_experiment_results(test_path, num_tests=None, target_fpr=0.001):
             acc_tests_eval_train.append(_unpack_eval_results(dict(np.load(f))))
         with open(os.path.join(iter_path, "extra_results.pkl"), "rb") as f:
             acc_tests_extra.append(pickle.load(f))
-        with open(os.path.join(iter_path, persistence.INITIAL_LIRA_RESULTS), "rb") as f:
-            initial_lira_results.append(pickle.load(f))
-        with open(os.path.join(iter_path, persistence.EVAL_LIRA_RESULTS), "rb") as f:
-            tests_lira_results.append(dict(np.load(f)))
+        initial_path = os.path.join(iter_path, persistence.INITIAL_LIRA_RESULTS)
+        scores_path = os.path.join(iter_path, persistence.EVAL_LIRA_RESULTS)
+        if shadow_bank is not None and os.path.exists(initial_path) and os.path.exists(scores_path):
+            with open(initial_path, "rb") as f:
+                initial_lira_results.append(pickle.load(f))
+            with open(scores_path, "rb") as f:
+                scores = dict(np.load(f))
+                tests_lira_results.append(scores)
+            indices_path = os.path.join(iter_path, persistence.LIRA_CASE_INDICES)
+            if os.path.exists(indices_path):
+                with open(indices_path, "rb") as f:
+                    indices = pickle.load(f)
+            else:
+                # Compatibility with suites that audited every case.
+                indices = list(range(len(next(iter(scores.values())))))
+            percentages = np.asarray(acc_tests_extra[-1]["reset_params_percentage"])
+            if len(indices) != len(next(iter(scores.values()))) or any(
+                index < 0 or index >= len(percentages) for index in indices
+            ):
+                raise ValueError("LiRA case indices do not match the saved utility results")
+            lira_reset_percentages.append(percentages[indices])
+            case_ids = np.asarray(acc_tests_extra[-1].get('case_index', range(len(percentages))))
+            lira_case_ids.append(case_ids[indices].tolist())
 
+    case_ids = [extra.get('case_index') for extra in acc_tests_extra]
+    if case_ids and any(ids != case_ids[0] for ids in case_ids[1:]):
+        raise ValueError('Successful cases differ across repetitions; inspect failed cases before aggregation')
+    if lira_case_ids and any(ids != lira_case_ids[0] for ids in lira_case_ids[1:]):
+        raise ValueError('Audited cases differ across repetitions; inspect failed cases before aggregation')
     initial_eval_test = _merge_initial_results(acc_initial_eval_test)
     initial_eval_train = _merge_initial_results(acc_initial_eval_train)
     unlearned_eval_test = _merge_results(acc_tests_eval_test)
@@ -467,6 +490,42 @@ def plot_experiment_results(test_path, num_tests=None, target_fpr=0.001):
 
     initial_test_accuracies = _compute_accuracies(initial_eval_test, labels["test"])
     unlearned_test_accuracies = _compute_accuracies(unlearned_eval_test, labels["test"])
+
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    accuracy_styles = {
+        "reset":           {"label": "Reset",           "linestyle": "-",  "marker": "o"},
+        "random_reset":    {"label": "Random Reset",    "linestyle": "--", "marker": "s"},
+        "retrained":       {"label": "Retrained",       "linestyle": "-",  "marker": "D"},
+        "random_retrained":{"label": "Random Retrained","linestyle": "--", "marker": "^"},
+    }
+
+    trained_acc_mean, trained_acc_std = _summarize_baseline(initial_test_accuracies["trained"][0])
+    benchmark_acc_mean, benchmark_acc_std = _summarize_baseline(initial_test_accuracies["shadow_out"][0])
+
+    # Plot 2: Test accuracy vs unlearning percentage
+    _, ax = plt.subplots(figsize=(9, 5))
+    _plot_metric_vs_unlearning(
+        ax=ax, x_values=unlearned_extra["reset_params_percentage"],
+        metric_dict=unlearned_test_accuracies, label_map=accuracy_styles,
+        ylabel="Test Accuracy", title="Test Accuracy vs Unlearning Percentage",
+        baselines=[
+            {"mean": trained_acc_mean, "std": trained_acc_std,
+             "label": "Trained Baseline", "color": "tab:blue"},
+            {"mean": benchmark_acc_mean, "std": benchmark_acc_std,
+             "label": "Benchmark Baseline", "color": "tab:gray"},
+        ],
+    )
+    plt.tight_layout()
+    plt.show()
+
+    if shadow_bank is None or not tests_lira_results:
+        print("LiRA was not evaluated for these runs; showing utility results only.")
+        return
+    case_counts = {len(values) for values in lira_reset_percentages}
+    if len(case_counts) != 1:
+        raise ValueError("Audited cases differ across repetitions; inspect failed cases before aggregation")
+    privacy_x_values = np.stack(lira_reset_percentages, axis=1)
 
     losses_in, losses_out = _fit_lira_distributions(
         shadow_bank["scores"],
@@ -524,39 +583,13 @@ def plot_experiment_results(test_path, num_tests=None, target_fpr=0.001):
     plt.tight_layout()
     plt.show()
 
-    accuracy_styles = {
-        "reset":           {"label": "Reset",           "linestyle": "-",  "marker": "o"},
-        "random_reset":    {"label": "Random Reset",    "linestyle": "--", "marker": "s"},
-        "retrained":       {"label": "Retrained",       "linestyle": "-",  "marker": "D"},
-        "random_retrained":{"label": "Random Retrained","linestyle": "--", "marker": "^"},
-    }
-
-    trained_acc_mean, trained_acc_std = _summarize_baseline(initial_test_accuracies["trained"][0])
-    benchmark_acc_mean, benchmark_acc_std = _summarize_baseline(initial_test_accuracies["shadow_out"][0])
-
-    # Plot 2: Test accuracy vs unlearning percentage
-    _, ax = plt.subplots(figsize=(9, 5))
-    _plot_metric_vs_unlearning(
-        ax=ax, x_values=unlearned_extra["reset_params_percentage"],
-        metric_dict=unlearned_test_accuracies, label_map=accuracy_styles,
-        ylabel="Test Accuracy", title="Test Accuracy vs Unlearning Percentage",
-        baselines=[
-            {"mean": trained_acc_mean, "std": trained_acc_std,
-             "label": "Trained Baseline", "color": "tab:blue"},
-            {"mean": benchmark_acc_mean, "std": benchmark_acc_std,
-             "label": "Benchmark Baseline", "color": "tab:gray"},
-        ],
-    )
-    plt.tight_layout()
-    plt.show()
-
     trained_tpr_mean, trained_tpr_std = _summarize_baseline(initial_tpr_at_fpr["trained"][0])
     benchmark_tpr_mean, benchmark_tpr_std = _summarize_baseline(initial_tpr_at_fpr["shadow_out"][0])
 
     # Plot 3: TPR at FPR vs unlearning percentage
     _, ax = plt.subplots(figsize=(9, 5))
     _plot_metric_vs_unlearning(
-        ax=ax, x_values=unlearned_extra["reset_params_percentage"],
+        ax=ax, x_values=privacy_x_values,
         metric_dict=unlearned_tpr_at_fpr, label_map=accuracy_styles,
         ylabel=f"TPR at FPR={target_fpr*100:.2f}%",
         title=f"TPR at FPR={target_fpr*100:.2f}% vs Unlearning Percentage",

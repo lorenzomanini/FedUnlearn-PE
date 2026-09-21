@@ -1,4 +1,5 @@
 import numpy as np
+import os
 from experiments import runner as tester
 from experiments.runner import run_repeated_tests, InitParamsDict, TestParamsDict
 
@@ -35,6 +36,12 @@ def generate_params_ranges(test_params_dict):
         test_params_dicts_2[i]['unlearning_percentage'] = percentage
 
 
+    # Audit three representative settings, reusing one suite-wide shadow bank.
+    lira_cases = {0, len(test_params_dicts_0) // 2, len(test_params_dicts_0) - 1}
+    for i, case in enumerate(test_params_dicts_0):
+        case["tests"] = [name for name in case.get("tests", []) if name != "LiRA"]
+        if i in lira_cases:
+            case["tests"].append("LiRA")
     return test_params_dicts_0
 
 if __name__ == "__main__":
@@ -66,6 +73,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method,
         'stochastic_correction': stochastic_correction
     }
@@ -97,6 +105,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method,
         'stochastic_correction': stochastic_correction
     }
@@ -128,6 +137,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method
     }
 
@@ -158,6 +168,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method
     }
 
@@ -187,6 +198,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method,
         'stochastic_correction': True
     }
@@ -218,6 +230,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method,
         'stochastic_correction': True
     }
@@ -249,6 +262,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method
     }
 
@@ -278,6 +292,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         'hessian_method': hessian_method
     }
 
@@ -307,6 +322,7 @@ if __name__ == "__main__":
 
         'target_client': 0,
         'num_tests': num_tests,
+        'num_shadow_models': int(os.environ.get('LIRA_SHADOW_MODELS', '8')),
         
         'poison' : True,
         'target_label': 9,

@@ -2,7 +2,7 @@ from fisherunlearn.clients_utils import split_dataset_by_class_distribution, con
 from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 from fisherunlearn import plot_information_parameters_tradeoff
-from fisherunlearn.information.spectral_wip import estimate_diag_commuting_backpack
+from fisherunlearn.information.spectral_wip import estimate_core_score
 
 import fisherunlearn
 
@@ -10,6 +10,7 @@ import os
 import pickle
 import random
 import logging
+import time
 import functools
 import sys, traceback
 
@@ -119,6 +120,11 @@ def get_trainer_function(init_params_dict):
         return functools.partial(fedavg_trainer, init_params_dict=init_params_dict)
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
+
+
+def _requests_lira(test_params_dict):
+    """Privacy auditing is opt-in and separate from the unlearning operation."""
+    return "LiRA" in test_params_dict.get("tests", [])
 
 
 def _balanced_membership_mask(num_shadow_models, num_candidates, rng):
@@ -239,6 +245,8 @@ def _prepare_online_lira(
     cuda_devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
     with torch.random.fork_rng(devices=cuda_devices):
         for shadow_index, row in enumerate(membership):
+            shadow_start = time.perf_counter()
+            logging.info("Training LiRA shadow %s/%s", shadow_index + 1, num_shadow_models)
             torch.manual_seed(seed + shadow_index)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed_all(seed + shadow_index)
@@ -256,6 +264,10 @@ def _prepare_online_lira(
                 init_params_dict["train_epochs"],
             )
             shadow_scores.append(evaluate_lira_function(shadow_model, candidate_dataset))
+            logging.info(
+                "LiRA shadow %s/%s completed in %.1f seconds",
+                shadow_index + 1, num_shadow_models, time.perf_counter() - shadow_start,
+            )
 
     bank = {
         "scores": np.stack(shadow_scores).astype(np.float32),
@@ -284,6 +296,21 @@ def _prepare_online_lira(
 
 
 
+def _curvature_loader(dataset, max_samples, batch_size, seed):
+    """A fixed, reproducible sample; zero/None explicitly requests all records."""
+    if max_samples is not None and (
+        isinstance(max_samples, bool) or not isinstance(max_samples, int) or max_samples < 0
+    ):
+        raise ValueError('spectral sample limits must be nonnegative integers or None')
+    if len(dataset) == 0:
+        raise ValueError('Curvature estimation requires a nonempty dataset')
+    if max_samples and max_samples < len(dataset):
+        indices = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(seed))[:max_samples].tolist()
+    else:
+        indices = list(range(len(dataset)))
+    return DataLoader(Subset(dataset, indices), batch_size=batch_size, shuffle=False)
+
+
 class _RevisedTest:
     def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, 
                  init_params_dict={}, poisoned_backdoor_dataset=None, clean_backdoor_dataset=None,
@@ -300,10 +327,7 @@ class _RevisedTest:
         self.target_subset = self.clients_subsets[self.target_client]
         self.non_target_subsets = [subset for i, subset in enumerate(self.clients_subsets) if i != self.target_client]
 
-        if _information_method == "spectral_wip":
-            batch_size = 128
-            self.client_loader = DataLoader(self.clients_subsets[self.target_client], batch_size, shuffle=True)
-            self.total_loader = DataLoader(self.clients_subsets[0].dataset, batch_size, shuffle=True)
+        self.stage_timings = {}
         
         self.poisoned_backdoor_dataset = poisoned_backdoor_dataset
         self.clean_backdoor_dataset = clean_backdoor_dataset
@@ -340,25 +364,32 @@ class _RevisedTest:
         train_subsets = shadow_out_subsets + [self.target_subset]
 
         logging.info("Training trained model...") 
+        stage_start = time.perf_counter()
         self.trained_model = self.trainer_function(
             self.model_class(), self.loss_class(), train_subsets, eval_subsets,
             train_epochs
         )
+        self.stage_timings['initial_training_seconds'] = time.perf_counter() - stage_start
 
         if _information_method == "diagonal":
             logging.info("Computing information...")
+            stage_start = time.perf_counter()
             self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, stochastic_correction=init_params_dict.get('stochastic_correction', False), use_converter=init_params_dict.get('info_use_converter', True), method=init_params_dict['hessian_method'], learning_rate=init_params_dict['learning_rate'], momentum=init_params_dict['momentum'])
+            self.stage_timings['score_seconds'] = time.perf_counter() - stage_start
 
         logging.info("Training gold-standard client-removal model...")
+        stage_start = time.perf_counter()
         self.gold_retrain_model = self.trainer_function(
             self.model_class(), self.loss_class(), shadow_out_subsets, eval_subsets,
             train_epochs
         )
+        self.stage_timings['gold_retraining_seconds'] = time.perf_counter() - stage_start
         # Artifact compatibility only: record-level LiRA OUT populations come
         # from False entries in the saved shadow-membership mask, not this model.
         self.shadow_out_model = self.gold_retrain_model
 
         logging.info("Computing initial evaluation results...")
+        stage_start = time.perf_counter()
 
         self.init_eval_test_results = {
             "trained": evaluate_model(self.trained_model, self.test_dataset),
@@ -368,10 +399,68 @@ class _RevisedTest:
             "trained": evaluate_model(self.trained_model, self.train_dataset),
             "shadow_out": evaluate_model(self.shadow_out_model, self.train_dataset),
         }
+        self.stage_timings['initial_evaluation_seconds'] = time.perf_counter() - stage_start
 
         if _information_method == "spectral_wip":
-            logging.info("Computing client information...")
-            self.client_information = estimate_diag_commuting_backpack(self.trained_model.to(DEVICE), self.total_loader, self.client_loader, loss_class(), 10, DEVICE, _num_power_iters)["diag_by_name"]
+            # Curvature is evaluated on the examples actually used for training.
+            # Fixed random subsets keep every iteration on the same operator.
+            score_dataset = concatenate_subsets(train_subsets)
+            seed = init_params_dict.get('spectral_seed', 0)
+            self.total_loader = _curvature_loader(
+                score_dataset, init_params_dict.get('spectral_max_samples', 512),
+                INFO_BATCH_SIZE, seed,
+            )
+            self.client_loader = _curvature_loader(
+                self.target_subset, init_params_dict.get('spectral_target_max_samples', 512),
+                INFO_BATCH_SIZE, seed + 1,
+            )
+            logging.info(
+                'Computing core score on %s/%s training and %s/%s target records...',
+                len(self.total_loader.dataset), len(score_dataset),
+                len(self.client_loader.dataset), len(self.target_subset),
+            )
+            stage_start = time.perf_counter()
+            cuda_devices = [torch.device(DEVICE).index or 0] if torch.device(DEVICE).type == 'cuda' else []
+            with torch.random.fork_rng(devices=cuda_devices):
+                torch.manual_seed(seed)
+                score = estimate_core_score(
+                    self.trained_model.to(DEVICE), self.total_loader, self.client_loader,
+                    loss_class(), init_params_dict.get('spectral_rank', 10), DEVICE,
+                    num_power_iters=init_params_dict.get('spectral_num_power_iters', _num_power_iters),
+                    hmp_chunk_size=init_params_dict.get('spectral_hmp_chunk_size', 1),
+                    curvature_backend=init_params_dict.get('spectral_curvature_backend', 'full'),
+                    eigenvalue_threshold=init_params_dict.get('spectral_eigenvalue_min', 1e-6),
+                    relative_eigenvalue_threshold=init_params_dict.get('spectral_eigenvalue_rtol', 1e-5),
+                    power_tolerance=init_params_dict.get('spectral_power_tolerance', 1e-3),
+                )
+            self.trained_model.cpu()
+            self.stage_timings['score_seconds'] = time.perf_counter() - stage_start
+            self.client_information = score['diag_by_name']
+            self.score_diagnostics = {
+                key: value for key, value in score.items()
+                if key not in {'diag_by_name', 'diag_flat', 'diag_tensors', 'evecs'}
+            }
+            self.score_diagnostics.update(
+                full_samples=len(self.total_loader.dataset),
+                target_samples=len(self.client_loader.dataset),
+                full_population=len(score_dataset),
+                target_population=len(self.target_subset),
+                full_sample_positions=list(self.total_loader.dataset.indices),
+                target_sample_positions=list(self.client_loader.dataset.indices),
+                training_indices=list(score_dataset.indices),
+                target_indices=list(self.target_subset.indices),
+                target_fraction=len(self.target_subset) / len(score_dataset),
+                information_scale=2 * (len(self.target_subset) / len(score_dataset)) ** 2,
+                seed=seed,
+            )
+            logging.info(
+                'Core score: retained rank=%s/%s, sum-rule relative error=%.3g, %.2f seconds',
+                score['diagnostics']['retained_rank'], score['diagnostics']['requested_rank'],
+                score['diagnostics']['sum_rule_relative_error'], self.stage_timings['score_seconds'],
+            )
+            if score['diagnostics']['retained_rank'] == 0:
+                logging.warning('No positive curvature directions survived the cutoff; all reset scores are zero.')
+        logging.info('Setup stage timings (seconds): %s', self.stage_timings)
 
     def configure_lira(self, candidate_dataset, evaluate_lira_function=evaluate_lira):
         self.lira_candidate_dataset = candidate_dataset
@@ -391,13 +480,18 @@ class _RevisedTest:
 
         logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}")
 
+        selection_start = time.perf_counter()
         informative_params = find_informative_params(self.client_information, unlearning_method, unlearning_percentage, whitelist, blacklist)
         num_reset_params = 0
         for indices_tensor in informative_params.values():
             if indices_tensor is not None and indices_tensor.numel() > 0: 
                  num_reset_params += indices_tensor.shape[0]
+        selection_seconds = time.perf_counter() - selection_start
+        recovery_seconds = 0.0
+        random_baseline_seconds = 0.0
 
         if num_reset_params != 0:
+            recovery_start = time.perf_counter()
             reset_model = self.model_class()
             reset_state_dict = reset_parameters(self.trained_model, informative_params)
             reset_model.load_state_dict(reset_state_dict)
@@ -406,7 +500,9 @@ class _RevisedTest:
             self.trainer_function(retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
             retrained_model = self.model_class()
             retrained_model.load_state_dict(retrainer.get_retrained_params())
+            recovery_seconds = time.perf_counter() - recovery_start
 
+            random_start = time.perf_counter()
             reset_params_percentage = num_reset_params / self.num_total_params * 100
             random_params = find_informative_params(self.client_information, 'random', reset_params_percentage, whitelist, blacklist)
 
@@ -418,6 +514,7 @@ class _RevisedTest:
             self.trainer_function(random_retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
             random_retrained_model = self.model_class()
             random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
+            random_baseline_seconds = time.perf_counter() - random_start
         else:
             logging.warning("No parameters to reset, skipping unlearning and retraining.")
             reset_model = self.trained_model
@@ -432,31 +529,54 @@ class _RevisedTest:
         extra_results['num_total_params'] = self.num_total_params
         extra_results['num_reset_params'] = num_reset_params
         extra_results['reset_params_percentage'] = reset_params_percentage
+        extra_results['selection_seconds'] = selection_seconds
+        extra_results['recovery_seconds'] = recovery_seconds
+        extra_results['unlearning_seconds'] = selection_seconds + recovery_seconds
+        extra_results['random_baseline_seconds'] = random_baseline_seconds
+        # Score construction is shared across the sweep, charged once per deletion.
+        extra_results['score_seconds'] = self.stage_timings['score_seconds']
+        extra_results['unlearning_with_score_seconds'] = (
+            self.stage_timings['score_seconds'] + selection_seconds + recovery_seconds
+        )
 
         logging.info(f"Percentage of reset parameters: {reset_params_percentage:.4f}% ({num_reset_params}/{self.num_total_params})")
         
 
-        eval_test_results = {
-            "reset": evaluate_model(reset_model, self.test_dataset),
-            "retrained": evaluate_model(retrained_model, self.test_dataset),
-            "random_reset": evaluate_model(random_reset_model, self.test_dataset),
-            "random_retrained": evaluate_model(random_retrained_model, self.test_dataset)
-        }
-        eval_train_results = {
-            "reset": evaluate_model(reset_model, self.train_dataset),
-            "retrained": evaluate_model(retrained_model, self.train_dataset),
-            "random_reset": evaluate_model(random_reset_model, self.train_dataset),
-            "random_retrained": evaluate_model(random_retrained_model, self.train_dataset)
-        }
+        evaluation_start = time.perf_counter()
+        if num_reset_params == 0:
+            model_keys = ('reset', 'retrained', 'random_reset', 'random_retrained')
+            eval_test_results = {key: self.init_eval_test_results['trained'] for key in model_keys}
+            eval_train_results = {key: self.init_eval_train_results['trained'] for key in model_keys}
+        else:
+            models = dict(reset=reset_model, retrained=retrained_model,
+                          random_reset=random_reset_model, random_retrained=random_retrained_model)
+            eval_test_results = {key: evaluate_model(model, self.test_dataset) for key, model in models.items()}
+            eval_train_results = {key: evaluate_model(model, self.train_dataset) for key, model in models.items()}
+        extra_results['evaluation_seconds'] = time.perf_counter() - evaluation_start
 
-        if hasattr(self, "lira_candidate_dataset"):
-            self.last_lira_results = {
-                "reset": self.evaluate_lira_function(reset_model, self.lira_candidate_dataset),
-                "retrained": self.evaluate_lira_function(retrained_model, self.lira_candidate_dataset),
-                "random_reset": self.evaluate_lira_function(random_reset_model, self.lira_candidate_dataset),
-                "random_retrained": self.evaluate_lira_function(random_retrained_model, self.lira_candidate_dataset),
+        lira_start = time.perf_counter()
+        self.last_lira_results = None
+        if hasattr(self, "lira_candidate_dataset") and _requests_lira(test_params_dict):
+            # At zero reset all four entries refer to the trained model. Reuse
+            # its initial scores; evaluate any other shared model only once.
+            known_scores = {
+                id(self.trained_model): self.init_lira_results["trained"],
+                id(self.shadow_out_model): self.init_lira_results["shadow_out"],
             }
+            self.last_lira_results = {}
+            for name, model in {
+                "reset": reset_model,
+                "retrained": retrained_model,
+                "random_reset": random_reset_model,
+                "random_retrained": random_retrained_model,
+            }.items():
+                if id(model) not in known_scores:
+                    known_scores[id(model)] = self.evaluate_lira_function(
+                        model, self.lira_candidate_dataset
+                    )
+                self.last_lira_results[name] = known_scores[id(model)]
 
+        extra_results['lira_evaluation_seconds'] = time.perf_counter() - lira_start
         return eval_test_results, eval_train_results, extra_results
 
 
@@ -534,6 +654,9 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
 
     persistence.dump_pickle(test_iter_path, persistence.INITIAL_TEST_RESULTS, test_instance.init_eval_test_results)
     persistence.dump_pickle(test_iter_path, persistence.INITIAL_TRAIN_RESULTS, test_instance.init_eval_train_results)
+    persistence.dump_pickle(test_iter_path, 'stage_timings.pkl', getattr(test_instance, 'stage_timings', {}))
+    if hasattr(test_instance, 'score_diagnostics'):
+        persistence.dump_pickle(test_iter_path, 'score_diagnostics.pkl', test_instance.score_diagnostics)
     if lira_context is not None:
         persistence.dump_pickle(
             test_iter_path, persistence.INITIAL_LIRA_RESULTS, test_instance.init_lira_results
@@ -542,16 +665,21 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
     acc_eval_test_results = []
     acc_eval_train_results = []
     acc_lira_results = []
+    lira_case_indices = []
+    successful_case_count = 0
     acc_extra_results = []
     errors = []
     for i, test_params_dict in enumerate(tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
         try:
             eval_test_result, eval_train_result, test_extra_result = test_instance.run_test(test_params_dict)
+            test_extra_result['case_index'] = i
             acc_eval_test_results.append(eval_test_result)
             acc_eval_train_results.append(eval_train_result)
             acc_extra_results.append(test_extra_result)
-            if lira_context is not None:
+            if lira_context is not None and test_instance.last_lira_results is not None:
                 acc_lira_results.append(test_instance.last_lira_results)
+                lira_case_indices.append(successful_case_count if filter_error_results else i)
+            successful_case_count += 1
         except Exception as e:
             logging.error(f"Error in test {i} of iteration {iter}: {str(e)}")
             traceback_str = ''.join(traceback.format_tb(e.__traceback__))
@@ -583,6 +711,9 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
             persistence.EVAL_LIRA_RESULTS,
             persistence.pack_score_results(acc_lira_results),
         )
+        persistence.dump_pickle(
+            test_iter_path, persistence.LIRA_CASE_INDICES, lira_case_indices
+        )
 
     logging.info(f"--- Finished Test Iteration {iter} ---")
     logging.getLogger().removeHandler(log_file_handler)
@@ -602,10 +733,22 @@ def _run_repeated_tests(
     plot=None, plot_results_function=None, evaluate_lira_function=evaluate_lira,
 ):
 
+    suite_start = time.perf_counter()
+    suite_timings = {'lira_shadow_training_seconds': 0.0}
     init_params_dict = init_params_dict.copy()
-    init_params_dict.setdefault("num_shadow_models", 64)
+    init_params_dict.setdefault("num_shadow_models", 8)
     init_params_dict.setdefault("lira_seed", 2026)
     init_params_dict.setdefault("lira_global_variance", True)
+    num_shadow_models = init_params_dict["num_shadow_models"]
+    if (
+        isinstance(num_shadow_models, bool)
+        or not isinstance(num_shadow_models, (int, np.integer))
+        or (num_shadow_models != 0 and (num_shadow_models < 4 or num_shadow_models % 2))
+    ):
+        raise ValueError("num_shadow_models must be 0 or an even integer of at least four.")
+    lira_case_indices = [i for i, case in enumerate(test_params_dicts) if _requests_lira(case)]
+    init_params_dict["lira_case_indices"] = lira_case_indices
+    init_params_dict["lira_enabled"] = bool(num_shadow_models and lira_case_indices)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -659,7 +802,8 @@ def _run_repeated_tests(
     persistence.dump_pickle(test_path, persistence.CLIENT_INDICES, client_indices)
 
     lira_context = None
-    if init_params_dict["num_shadow_models"]:
+    if init_params_dict["lira_enabled"]:
+        shadow_start = time.perf_counter()
         logging.info(
             "Training %s reusable online-LiRA shadow models...",
             init_params_dict["num_shadow_models"],
@@ -675,6 +819,9 @@ def _run_repeated_tests(
             evaluate_lira_function,
         )
         persistence.dump_npz(test_path, persistence.LIRA_SHADOW_BANK, lira_bank)
+        suite_timings['lira_shadow_training_seconds'] = time.perf_counter() - shadow_start
+    else:
+        logging.info("Skipping LiRA: disabled or no test case requests 'LiRA'.")
     
     labels = {
         'train': [label for _, label in train_dataset],
@@ -738,9 +885,14 @@ def _run_repeated_tests(
                 logging.error(f"Test iteration {i} encountered errors at the following test runs: {str(errors)}")
 
     logging.info(f"Test suite '{test_name}' completed")
+    suite_timings['total_suite_seconds'] = time.perf_counter() - suite_start
+    persistence.dump_pickle(test_path, 'stage_timings.pkl', suite_timings)
+    logging.info('Suite timings (seconds): %s', suite_timings)
 
     if plot:
         plot_results_function(test_path)
+    logging.getLogger().removeHandler(log_file_handler)
+    log_file_handler.close()
 
 
 def run_repeated_tests(init_params_dict, test_params_dicts, save_path, num_workers=1, devices=None, save_models=False):

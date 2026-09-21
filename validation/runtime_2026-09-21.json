@@ -1,0 +1,245 @@
+{
+  "date": "2026-09-21",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "baseline_commit": "939ab74",
+  "python": "3.12",
+  "torch": "2.14.0",
+  "torchvision": "0.29.0",
+  "backpack": "1.7.1",
+  "tests": {
+    "run": 37,
+    "passed": 36,
+    "skipped_cuda_only": 1
+  },
+  "curvature_operator": [
+    {
+      "backend": "full",
+      "shape": [
+        11181642,
+        2
+      ],
+      "warmup_seconds": 1.006970333008212,
+      "measured_seconds": [
+        0.49157966699567623,
+        0.48961791599867865
+      ],
+      "mean_seconds": 0.49059879149717744
+    },
+    {
+      "backend": "block",
+      "shape": [
+        11181642,
+        2
+      ],
+      "warmup_seconds": 24.532133000000613,
+      "measured_seconds": [
+        23.543140875000972,
+        24.53081941700657
+      ],
+      "mean_seconds": 24.03698014600377
+    }
+  ],
+  "selected_recovery": [
+    {
+      "dimension": 32,
+      "batch": 16,
+      "version": "old",
+      "forward_backward_ms": 0.25279791498178383,
+      "state_storage_bytes": 9528,
+      "trainable_coordinates": 134
+    },
+    {
+      "dimension": 32,
+      "batch": 16,
+      "version": "new",
+      "forward_backward_ms": 0.145032500004163,
+      "state_storage_bytes": 6888,
+      "trainable_coordinates": 134
+    },
+    {
+      "dimension": 1024,
+      "batch": 32,
+      "version": "old",
+      "forward_backward_ms": 2.1132311998371733,
+      "state_storage_bytes": 7615392,
+      "trainable_coordinates": 105782
+    },
+    {
+      "dimension": 1024,
+      "batch": 32,
+      "version": "new",
+      "forward_backward_ms": 0.7565874999272637,
+      "state_storage_bytes": 5500584,
+      "trainable_coordinates": 105782
+    }
+  ],
+  "mnist": {
+    "initial_training_seconds": 5.162061499999254,
+    "initial_accuracy": 0.919921875,
+    "scores": [
+      {
+        "samples": 128,
+        "requested_rank": 4,
+        "retained_rank": 4,
+        "eigenvalue_threshold": 0.0003656962585449219,
+        "absolute_eigenvalue_threshold": 1e-06,
+        "relative_eigenvalue_threshold": 1e-05,
+        "score_sum": 4.511797904968262,
+        "core_trace": 4.511797904968262,
+        "sum_rule_absolute_error": 0.0,
+        "sum_rule_relative_error": 0.0,
+        "curvature_backend": "full",
+        "subspace": {
+          "operator_calls": 3,
+          "power_iterations": 2,
+          "converged": false,
+          "eigenpair_residual_norms": [
+            1.8665393590927124,
+            4.87476921081543,
+            3.4570748805999756,
+            3.226874351501465
+          ],
+          "eigenpair_relative_residuals": [
+            0.05104070156812668,
+            0.1656174659729004,
+            0.20341193675994873,
+            0.2247939109802246
+          ],
+          "ritz_eigenvalues": [
+            36.56962585449219,
+            29.433908462524414,
+            16.995437622070312,
+            14.354811668395996
+          ],
+          "elapsed_seconds": 1.9518722500069998
+        },
+        "retained_eigenpair_residual_norms": [
+          1.8665393590927124,
+          4.87476921081543,
+          3.4570748805999756,
+          3.226874351501465
+        ],
+        "retained_eigenpair_relative_residuals": [
+          0.05104070156812668,
+          0.1656174659729004,
+          0.20341193675994873,
+          0.2247939109802246
+        ],
+        "target_operator_calls": 1,
+        "full_hvp_directions": 12,
+        "target_hvp_directions": 4,
+        "elapsed_seconds": 2.6818029999994906
+      },
+      {
+        "samples": 512,
+        "requested_rank": 4,
+        "retained_rank": 4,
+        "eigenvalue_threshold": 0.0003345282363891602,
+        "absolute_eigenvalue_threshold": 1e-06,
+        "relative_eigenvalue_threshold": 1e-05,
+        "score_sum": 4.695613861083984,
+        "core_trace": 4.695613384246826,
+        "sum_rule_absolute_error": 4.76837158203125e-07,
+        "sum_rule_relative_error": 1.0154949592333651e-07,
+        "curvature_backend": "full",
+        "subspace": {
+          "operator_calls": 3,
+          "power_iterations": 2,
+          "converged": false,
+          "eigenpair_residual_norms": [
+            3.4613406658172607,
+            3.00290846824646,
+            6.818288803100586,
+            2.769615888595581
+          ],
+          "eigenpair_relative_residuals": [
+            0.10346931219100952,
+            0.1096571534872055,
+            0.36816421151161194,
+            0.1867738664150238
+          ],
+          "ritz_eigenvalues": [
+            33.452823638916016,
+            27.384519577026367,
+            18.519695281982422,
+            14.828712463378906
+          ],
+          "elapsed_seconds": 6.771129624990863
+        },
+        "retained_eigenpair_residual_norms": [
+          3.4613406658172607,
+          3.00290846824646,
+          6.818288803100586,
+          2.769615888595581
+        ],
+        "retained_eigenpair_relative_residuals": [
+          0.10346931219100952,
+          0.1096571534872055,
+          0.36816421151161194,
+          0.1867738664150238
+        ],
+        "target_operator_calls": 1,
+        "full_hvp_directions": 12,
+        "target_hvp_directions": 4,
+        "elapsed_seconds": 8.018053583000437,
+        "selected_count": 2924,
+        "recovery_seconds": 1.0488039170013508,
+        "recovered_accuracy": 0.92578125
+      },
+      {
+        "samples": 2048,
+        "requested_rank": 4,
+        "retained_rank": 4,
+        "eigenvalue_threshold": 0.00030526103973388673,
+        "absolute_eigenvalue_threshold": 1e-06,
+        "relative_eigenvalue_threshold": 1e-05,
+        "score_sum": 4.497513771057129,
+        "core_trace": 4.497514724731445,
+        "sum_rule_absolute_error": 9.5367431640625e-07,
+        "sum_rule_relative_error": 2.120447391007474e-07,
+        "curvature_backend": "full",
+        "subspace": {
+          "operator_calls": 3,
+          "power_iterations": 2,
+          "converged": false,
+          "eigenpair_residual_norms": [
+            3.371117353439331,
+            2.7690021991729736,
+            2.8310515880584717,
+            3.0915353298187256
+          ],
+          "eigenpair_relative_residuals": [
+            0.1104339212179184,
+            0.1007000282406807,
+            0.17051473259925842,
+            0.1938067078590393
+          ],
+          "ritz_eigenvalues": [
+            30.526103973388672,
+            27.49753189086914,
+            16.60297393798828,
+            15.951642036437988
+          ],
+          "elapsed_seconds": 27.53506949999428
+        },
+        "retained_eigenpair_residual_norms": [
+          3.371117353439331,
+          2.7690021991729736,
+          2.8310515880584717,
+          3.0915353298187256
+        ],
+        "retained_eigenpair_relative_residuals": [
+          0.1104339212179184,
+          0.1007000282406807,
+          0.17051473259925842,
+          0.1938067078590393
+        ],
+        "target_operator_calls": 1,
+        "full_hvp_directions": 12,
+        "target_hvp_directions": 4,
+        "elapsed_seconds": 28.74933874999988,
+        "score_cosine_with_512": 0.9379119873046875
+      }
+    ]
+  }
+}

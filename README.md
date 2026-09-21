@@ -19,7 +19,7 @@ The repository intentionally retains three behaviorally distinct experiment gene
 
 These root modules remain compatibility launchers. Their implementations now live under `experiments/`; reusable scientific code lives under `fisherunlearn/`; and artifact readers, metrics, and plots live under `analysis/`. The spectral implementation remains explicitly WIP and is not the diagonal default.
 
-Phase-2 refactoring decisions, the reproducibility baseline, and validation evidence are recorded in [`docs/refactoring/`](docs/refactoring/). The executable code—not either manuscript—is the behavior oracle for this structural phase.
+The spectral score now follows the noncommuting core allocation in `core_score_framework_didactic.pdf`, equations (55)–(58). Runtime changes and local validation evidence are recorded in [RUNTIME_VALIDATION.md](RUNTIME_VALIDATION.md).
 
 ## Online LiRA privacy evaluation
 
@@ -30,15 +30,21 @@ the shadows trained with that record (shadow-IN) and without it (shadow-OUT).
 The rest of each shadow's training set is sampled independently from the common
 data pool, and every shadow uses the same number of records as the attacked
 model. The attack fits per-record Gaussian means to the stable logit confidence
-and computes `log p(score | IN) - log p(score | OUT)` for every trained,
-unlearned, and gold-retrained model.
+and computes `log p(score | IN) - log p(score | OUT)` for audited trained,
+unlearned, and gold-retrained models.
 
-Set `num_shadow_models` (default `64`, use `0` to disable), `lira_seed`, and
+LiRA runs only when a case explicitly includes `"LiRA"` in `tests`.
+Set `num_shadow_models` (default `8`, use `0` to disable), `lira_seed`, and
 `lira_global_variance` in the initial experiment configuration. The global
 variance option pools within-record residuals separately for IN and OUT; the
 per-record means are never pooled. The suite-level `lira_shadow_bank.npz`
 contains the shadow scores and explicit membership mask, while each `test_<n>`
-directory contains the candidate scores for the evaluated models.
+directory contains candidate scores only for its audited cases.
+`lira_case_indices.pkl` maps their rows to the saved utility-result rows. Cases
+without LiRA still retain all utility results; the analysis handles these partial
+audits and suites with LiRA disabled. Eight shadows give four IN and four OUT
+observations per record; this is an inexpensive exploratory audit, with less
+statistical precision than a 64-shadow evaluation.
 
 The result key `shadow_out` is retained for artifact compatibility and denotes
 the gold-standard model retrained without the entire target client. It is not
@@ -53,28 +59,80 @@ The faithful shadow-bank path currently supports the centralized `sgd` runner.
 The legacy runner now rejects its former single-benchmark approximation when a
 test requests `LiRA`, rather than reporting it as the paper's attack.
 
-## Checking the spectral calculation before a long run
+## Bounded spectral unlearning
 
-Inside an allocated GPU job, with the same modules and Python environment as
-`queue.sh`, run:
+The spectral runner uses full Hessian-vector products and retains every entry of
+`F = U.T @ H_target @ U`. It computes `B = Lambda**(-1/2) @ F @ Lambda**(-1/2)`
+and the squared row norms of `U @ B`, without constructing a full Hessian.
+Only positive Ritz values above the configured cutoff are inverted. Selection
+resets the smallest descending prefix reaching the requested score mass in each
+parameter group; zero-mass groups select nothing. This score is a selection
+statistic, not a certificate of post-reset privacy.
+
+The default uses a fixed random sample of up to 512 actual training records and
+512 target records, rank 10, and at most `NUM_POWER_ITERS + 1` full-curvature
+passes plus one target-curvature pass. The sample is reused on every pass, and
+held-out validation data is excluded. The score is computed once per trained
+model and reused throughout its percentage sweep. Full-data curvature is still
+available by setting both sample limits to `0` or `None`.
+
+These are explicit empirical-curvature and rank approximations. Compare sample
+size, rank, cutoff and forgetting/utility outcomes before publication. The
+existing diagonal runners remain separate historical variants; their optional
+stochastic correction is not part of the document's core score.
+
+Relevant initial configuration keys:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `spectral_max_samples` | 512 | Full-training curvature sample cap |
+| `spectral_target_max_samples` | 512 | Target curvature sample cap |
+| `spectral_rank` | 10 | Requested subspace dimension |
+| `spectral_num_power_iters` | `NUM_POWER_ITERS`, otherwise 5 | Maximum subspace updates |
+| `spectral_seed` | 0 | Fixed sample and subspace seed |
+| `spectral_eigenvalue_min` | 1e-6 | Absolute positive-curvature cutoff |
+| `spectral_eigenvalue_rtol` | 1e-5 | Cutoff relative to the largest positive Ritz value |
+| `spectral_power_tolerance` | 1e-3 | Relative eigenpair residual stopping tolerance |
+| `spectral_curvature_backend` | `full` | `block` explicitly selects the BackPACK block approximation |
+| `spectral_hmp_chunk_size` | 1 | Simultaneous product directions |
+
+Each repetition saves `score_diagnostics.pkl` with the sample indices, retained
+eigenvalues, projected target curvature, sum-rule error, eigenpair residuals and
+actual operator-pass count. `stage_timings.pkl` separates original training,
+gold retraining, score construction and initial evaluation. Per-case timings
+separate selection/recovery from the random baseline and privacy/utility
+inference; `unlearning_with_score_seconds` charges the shared score once to an
+individual deletion. The suite timing file records shadow-bank and total time.
+
+The spectral launch configuration now defaults to **3 repetitions** and performs
+LiRA at **3 of the 10 sweep points** (0%, 55.56%, 100% score mass). The training
+epochs and shadow training-set sizes are unchanged. Override these budgets:
 
 ```bash
-srun venv/bin/python -m experiments.spectral_smoke
+NUM_TESTS=3 LIRA_SHADOW_MODELS=8 NUM_POWER_ITERS=3 python -m experiments.configs.spectral_wip
+# Utility-only development run:
+NUM_TESTS=1 LIRA_SHADOW_MODELS=0 NUM_POWER_ITERS=2 python -m experiments.configs.spectral_wip
 ```
 
-This checks one ResNet18 Hessian matrix product with synthetic CIFAR-sized data,
-batch size 128, and rank 10, without training the LiRA shadow bank. It prints
-`PASS` if the output has the expected shape and finite values. It does not
-validate the full training or unlearning pipeline.
+## Checks before a long run
 
-The spectral estimator processes one direction vector per BackPACK HMP call by
-default. This reduces convolution intermediates that can otherwise trigger
-`canUse32BitIndexMath` failures when all rank-10 directions are processed at once.
-The rank, data batch size, and number of power iterations are unchanged. The
-optional `hmp_chunk_size` estimator argument controls this vector batch size.
-
-Run the small CPU numerical regression checks with:
+Within an allocated GPU job, using the same environment as `queue.sh`:
 
 ```bash
-python -m unittest discover -s tests -p 'test_spectral_hmp.py' -v
+srun venv/bin/python -m experiments.spectral_smoke --device cuda --batch-size 128 --rank 10
 ```
+
+This checks one ResNet18 full-Hessian matrix product at the same 64×64 image size
+as the CIFAR training transform. It does not train a LiRA bank. Use `--backend block`
+only to check the optional block approximation. A small local check is:
+
+```bash
+python -m experiments.spectral_smoke --device cpu --batch-size 2 --rank 2
+python -m unittest discover -s tests -v
+```
+
+The regression suite includes exact dense-Hessian comparisons, noncommuting
+core scores and basis invariance, selection boundaries/ties, frozen-weight
+gradients, real tiny shadow training, and complete small experiments with
+recovery, saved artifacts and sparse/no-LiRA analysis. The optional poisoning
+experiments additionally require `adversarial-robustness-toolbox`.

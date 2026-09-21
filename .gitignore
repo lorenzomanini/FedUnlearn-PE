@@ -17,5 +17,6 @@ requirements.txt
 requirements.in
 old/*
 docs/*
-tests/*
-!tests/test_spectral_hmp.py
+tests/__pycache__/
+**/__pycache__/
+.pytest_cache/

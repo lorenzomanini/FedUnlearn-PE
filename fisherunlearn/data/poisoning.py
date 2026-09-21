@@ -1,7 +1,5 @@
 import numpy as np
 import torch
-from art.attacks.poisoning import PoisoningAttackBackdoor
-from art.attacks.poisoning.perturbations import add_pattern_bd
 from torch.utils.data import TensorDataset
 
 
@@ -22,6 +20,10 @@ def create_poisoned_data(clients_subsets, init_params_dict):
 
 
 def poisoning_data(clients_subsets, init_params_dict):
+    # Ordinary unlearning and smoke runs do not require the optional attack stack.
+    from art.attacks.poisoning import PoisoningAttackBackdoor
+    from art.attacks.poisoning.perturbations import add_pattern_bd
+
     target_client = init_params_dict["target_client"]
     num_classes = init_params_dict["num_classes"]
     target_label = init_params_dict.get("target_label", 9)

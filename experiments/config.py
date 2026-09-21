@@ -31,6 +31,16 @@ class RevisedInitParamsDict(LegacyInitParamsDict):
     num_shadow_models: NotRequired[int]
     lira_seed: NotRequired[int]
     lira_global_variance: NotRequired[bool]
+    spectral_rank: NotRequired[int]
+    spectral_num_power_iters: NotRequired[int]
+    spectral_max_samples: NotRequired[int | None]
+    spectral_target_max_samples: NotRequired[int | None]
+    spectral_seed: NotRequired[int]
+    spectral_curvature_backend: NotRequired[Literal["full", "block"]]
+    spectral_eigenvalue_min: NotRequired[float]
+    spectral_eigenvalue_rtol: NotRequired[float]
+    spectral_power_tolerance: NotRequired[float]
+    spectral_hmp_chunk_size: NotRequired[int]
 
 
 class TestParamsDict(TypedDict):
