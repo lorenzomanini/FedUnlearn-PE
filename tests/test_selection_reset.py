@@ -97,6 +97,81 @@ class NamedModel(nn.Module):
 
 
 class SelectiveResetTests(unittest.TestCase):
+    def test_reference_reset_preserves_unselected_values_and_batchnorm_buffers(self):
+        model = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3)).double()
+        reference = copy.deepcopy(model)
+        with torch.no_grad():
+            model[1].running_mean.fill_(7)
+            reference[0].weight.fill_(2)
+            reference[1].weight.fill_(1)
+            reference[1].running_mean.fill_(-8)
+        before = copy.deepcopy(model.state_dict())
+        reference_before = copy.deepcopy(reference.state_dict())
+        indices = {"0.weight": torch.tensor([[0, 1]]), "1.weight": torch.tensor([[2]])}
+        reset = unlearning.reset_parameters(model, indices, reference)
+        wrapper = unlearning.UnlearnNet(model, indices, reference.state_dict())
+        for name, original in before.items():
+            expected = original.clone()
+            if name in indices:
+                expected[tuple(indices[name].t())] = reference_before[name][tuple(indices[name].t())]
+            torch.testing.assert_close(reset[name], expected, rtol=0, atol=0)
+            torch.testing.assert_close(wrapper.get_retrained_params()[name], expected, rtol=0, atol=0)
+            torch.testing.assert_close(model.state_dict()[name], original, rtol=0, atol=0)
+            torch.testing.assert_close(reference.state_dict()[name], reference_before[name], rtol=0, atol=0)
+
+    def test_reference_initialized_updates_match_dense_mask_reference(self):
+        torch.manual_seed(29)
+        model = nn.Sequential(nn.Linear(3, 3), nn.Tanh(), nn.Linear(3, 2)).double()
+        initialization = nn.Sequential(nn.Linear(3, 3), nn.Tanh(), nn.Linear(3, 2)).double()
+        indices = {"0.weight": torch.tensor([[0, 1], [2, 0]]), "2.bias": torch.tensor([[1]])}
+        wrapper = unlearning.UnlearnNet(model, indices, initialization)
+        dense = copy.deepcopy(model)
+        dense.load_state_dict(unlearning.reset_parameters(model, indices, initialization))
+        inputs, targets = torch.randn(8, 3, dtype=torch.float64), torch.randn(8, 2, dtype=torch.float64)
+        optimizers = [torch.optim.SGD(m.parameters(), lr=.1) for m in (wrapper, dense)]
+        for _ in range(3):
+            for optimizer in optimizers:
+                optimizer.zero_grad()
+            torch.testing.assert_close(wrapper(inputs), dense(inputs))
+            for net in (wrapper, dense):
+                nn.functional.mse_loss(net(inputs), targets).backward()
+            for name, parameter in dense.named_parameters():
+                mask = torch.zeros_like(parameter)
+                if name in indices:
+                    mask[tuple(indices[name].t())] = 1
+                parameter.grad.mul_(mask)
+            for optimizer in optimizers:
+                optimizer.step()
+        for name, value in wrapper.get_retrained_params().items():
+            torch.testing.assert_close(value, dense.state_dict()[name])
+
+    def test_reference_reset_reopens_dead_batchnorm_relu_channel(self):
+        torch.manual_seed(7)
+        model = nn.Sequential(
+            nn.Conv2d(1, 2, 3, padding=1, bias=False), nn.BatchNorm2d(2),
+            nn.ReLU(), nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(2, 2),
+        )
+        indices = {"1.weight": torch.tensor([[0]]), "1.bias": torch.tensor([[0]])}
+        inputs, targets = torch.randn(8, 1, 4, 4), torch.arange(8) % 2
+        zero = unlearning.UnlearnNet(model, indices)
+        initialized = unlearning.UnlearnNet(model, indices, copy.deepcopy(model))
+        for wrapper in (zero, initialized):
+            nn.functional.cross_entropy(wrapper(inputs), targets).backward()
+        for parameter in zero.parameters():
+            self.assertEqual(torch.count_nonzero(parameter.grad).item(), 0)
+        self.assertGreater(sum(p.grad.abs().sum().item() for p in initialized.parameters()), 0)
+
+    def test_invalid_reference_shape_and_buffer_selection_are_rejected(self):
+        model = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3))
+        indices = {"0.weight": torch.tensor([[0, 1]])}
+        for reference in ({}, {"0.weight": torch.zeros(1)}):
+            with self.assertRaisesRegex(ValueError, "shape-compatible"):
+                unlearning.reset_parameters(model, indices, reference)
+        with self.assertRaisesRegex(ValueError, "only model parameters"):
+            unlearning.reset_parameters(
+                model, {"1.running_mean": torch.tensor([[0]])}, model.state_dict(),
+            )
+
     def test_reset_matches_coordinates_and_does_not_mutate_input(self):
         model = nn.Linear(3, 2).double()
         before = copy.deepcopy(model.state_dict())

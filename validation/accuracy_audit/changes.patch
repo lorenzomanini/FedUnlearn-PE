@@ -1,0 +1,662 @@
+diff --git a/experiments/config.py b/experiments/config.py
+index 002d264..2e5aa00 100644
+--- a/experiments/config.py
++++ b/experiments/config.py
+@@ -48,6 +48,7 @@ class TestParamsDict(TypedDict):
+     unlearning_method: Literal["information", "parameters"]
+     unlearning_percentage: float
+     retrain_epochs: int
++    reset_strategy: NotRequired[Literal["zero", "initial"]]
+     tests: list[str]
+     mia_classifier_types: list[Literal["nn", "logistic", "svm"]]
+     whitelist: list[str]
+diff --git a/experiments/runner.py b/experiments/runner.py
+index 1ce8d52..0d24964 100644
+--- a/experiments/runner.py
++++ b/experiments/runner.py
+@@ -6,6 +6,7 @@ from fisherunlearn.information.spectral_wip import estimate_core_score
+ 
+ import fisherunlearn
+ 
++import copy
+ import os
+ import pickle
+ import random
+@@ -475,10 +476,13 @@ class _RevisedTest:
+         unlearning_method = test_params_dict['unlearning_method']
+         unlearning_percentage = test_params_dict['unlearning_percentage']
+         retrain_epochs = test_params_dict['retrain_epochs']
++        reset_strategy = test_params_dict.get('reset_strategy', 'zero')
++        if reset_strategy not in {'zero', 'initial'}:
++            raise ValueError("reset_strategy must be 'zero' or 'initial'")
+         whitelist = test_params_dict.get('whitelist', None)
+         blacklist = test_params_dict.get('blacklist', None)
+ 
+-        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}")
++        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}, ResetStrategy={reset_strategy}")
+ 
+         selection_start = time.perf_counter()
+         informative_params = find_informative_params(self.client_information, unlearning_method, unlearning_percentage, whitelist, blacklist)
+@@ -493,10 +497,20 @@ class _RevisedTest:
+         if num_reset_params != 0:
+             recovery_start = time.perf_counter()
+             reset_model = self.model_class()
+-            reset_state_dict = reset_parameters(self.trained_model, informative_params)
++            # Copy before load_state_dict overwrites the fresh model's tensors.
++            # The same initialization is used by the matched random baseline.
++            reset_reference = (
++                copy.deepcopy(reset_model.state_dict())
++                if reset_strategy == 'initial' else None
++            )
++            reset_state_dict = reset_parameters(
++                self.trained_model, informative_params, reset_reference=reset_reference,
++            )
+             reset_model.load_state_dict(reset_state_dict)
+ 
+-            retrainer = UnlearnNet(reset_model, informative_params) 
++            retrainer = UnlearnNet(
++                reset_model, informative_params, reset_reference=reset_reference,
++            )
+             self.trainer_function(retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
+             retrained_model = self.model_class()
+             retrained_model.load_state_dict(retrainer.get_retrained_params())
+@@ -507,10 +521,14 @@ class _RevisedTest:
+             random_params = find_informative_params(self.client_information, 'random', reset_params_percentage, whitelist, blacklist)
+ 
+             random_reset_model = self.model_class()
+-            random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params)
++            random_reset_state_dict = reset_parameters(
++                self.trained_model.cpu(), random_params, reset_reference=reset_reference,
++            )
+             random_reset_model.load_state_dict(random_reset_state_dict)
+ 
+-            random_retrainer = UnlearnNet(random_reset_model, random_params)
++            random_retrainer = UnlearnNet(
++                random_reset_model, random_params, reset_reference=reset_reference,
++            )
+             self.trainer_function(random_retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
+             random_retrained_model = self.model_class()
+             random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
+@@ -527,6 +545,10 @@ class _RevisedTest:
+         extra_results = {}
+ 
+         extra_results['num_total_params'] = self.num_total_params
++        extra_results['reset_strategy'] = reset_strategy
++        extra_results['num_reset_per_tensor'] = {
++            name: len(indices) for name, indices in informative_params.items()
++        }
+         extra_results['num_reset_params'] = num_reset_params
+         extra_results['reset_params_percentage'] = reset_params_percentage
+         extra_results['selection_seconds'] = selection_seconds
+diff --git a/fisherunlearn/unlearning.py b/fisherunlearn/unlearning.py
+index 1b104ca..596ba6c 100644
+--- a/fisherunlearn/unlearning.py
++++ b/fisherunlearn/unlearning.py
+@@ -28,14 +28,39 @@ def _flat_indices(tensor, coordinates):
+     return flat
+ 
+ 
+-def reset_parameters(model, informative_params):
+-    """Return an independent state dict with the selected coordinates zeroed."""
++def reset_parameters(model, informative_params, reset_reference=None):
++    """Return independent state with selected coordinates reset.
++
++    The default retains the historical zero reset. An explicit model or state
++    dictionary supplies initialization values for selected parameters instead.
++    This avoids dead ReLU channels when a BatchNorm scale and bias are both
++    selected. Unselected values and running-statistic buffers are preserved.
++    """
++    reference_state = None
++    if reset_reference is not None:
++        reference_state = (
++            reset_reference.state_dict()
++            if isinstance(reset_reference, nn.Module)
++            else reset_reference
++        )
++        parameter_names = dict(model.named_parameters())
++        for name in informative_params:
++            if name not in parameter_names:
++                raise ValueError("Reference resets may select only model parameters.")
+     reset_state = {}
+     for name, tensor in model.state_dict().items():
+         new_tensor = tensor.detach().clone(memory_format=torch.contiguous_format)
+         if name in informative_params:
+             indices = _flat_indices(new_tensor, informative_params[name])
+-            new_tensor.reshape(-1).index_fill_(0, indices, 0)
++            if reference_state is None:
++                new_tensor.reshape(-1).index_fill_(0, indices, 0)
++            elif indices.numel():
++                if name not in reference_state or reference_state[name].shape != tensor.shape:
++                    raise ValueError(f"Reset reference must contain shape-compatible parameter {name!r}.")
++                source = reference_state[name].detach().to(
++                    device=tensor.device, dtype=tensor.dtype,
++                )
++                new_tensor.reshape(-1).index_copy_(0, indices, source.reshape(-1)[indices])
+         reset_state[name] = new_tensor
+     return reset_state
+ 
+@@ -48,7 +73,7 @@ class UnlearnNet(nn.Module):
+     creation and sparse-to-dense backward operations on every training batch.
+     """
+ 
+-    def __init__(self, base_model, informative_params):
++    def __init__(self, base_model, informative_params, reset_reference=None):
+         super().__init__()
+         # The template must not register a second, fully trainable parameter set.
+         self.inner_model = {"model": copy.deepcopy(base_model)}
+@@ -56,7 +81,8 @@ class UnlearnNet(nn.Module):
+         self._base_names = {}
+         self._selected_names = {}
+         used_keys = set()
+-        for param_name, tensor in reset_parameters(base_model, informative_params).items():
++        reset_state = reset_parameters(base_model, informative_params, reset_reference)
++        for param_name, tensor in reset_state.items():
+             key = param_name.replace(".", "_")
+             while key in used_keys:
+                 key += "_"
+@@ -74,7 +100,9 @@ class UnlearnNet(nn.Module):
+             key = self._base_names[param_name]
+             self._selected_names[param_name] = key
+             self.register_buffer(f"indices_{key}", indices)
+-            retrain_params[key] = nn.Parameter(param.new_zeros(indices.numel()))
++            retrain_params[key] = nn.Parameter(
++                reset_state[param_name].reshape(-1)[indices].clone()
++            )
+         self.retrain_params = nn.ParameterDict(retrain_params)
+         self.train(base_model.training)
+ 
+diff --git a/tests/test_selection_reset.py b/tests/test_selection_reset.py
+index 52dc9a5..c54bc01 100644
+--- a/tests/test_selection_reset.py
++++ b/tests/test_selection_reset.py
+@@ -97,6 +97,81 @@ class NamedModel(nn.Module):
+ 
+ 
+ class SelectiveResetTests(unittest.TestCase):
++    def test_reference_reset_preserves_unselected_values_and_batchnorm_buffers(self):
++        model = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3)).double()
++        reference = copy.deepcopy(model)
++        with torch.no_grad():
++            model[1].running_mean.fill_(7)
++            reference[0].weight.fill_(2)
++            reference[1].weight.fill_(1)
++            reference[1].running_mean.fill_(-8)
++        before = copy.deepcopy(model.state_dict())
++        reference_before = copy.deepcopy(reference.state_dict())
++        indices = {"0.weight": torch.tensor([[0, 1]]), "1.weight": torch.tensor([[2]])}
++        reset = unlearning.reset_parameters(model, indices, reference)
++        wrapper = unlearning.UnlearnNet(model, indices, reference.state_dict())
++        for name, original in before.items():
++            expected = original.clone()
++            if name in indices:
++                expected[tuple(indices[name].t())] = reference_before[name][tuple(indices[name].t())]
++            torch.testing.assert_close(reset[name], expected, rtol=0, atol=0)
++            torch.testing.assert_close(wrapper.get_retrained_params()[name], expected, rtol=0, atol=0)
++            torch.testing.assert_close(model.state_dict()[name], original, rtol=0, atol=0)
++            torch.testing.assert_close(reference.state_dict()[name], reference_before[name], rtol=0, atol=0)
++
++    def test_reference_initialized_updates_match_dense_mask_reference(self):
++        torch.manual_seed(29)
++        model = nn.Sequential(nn.Linear(3, 3), nn.Tanh(), nn.Linear(3, 2)).double()
++        initialization = nn.Sequential(nn.Linear(3, 3), nn.Tanh(), nn.Linear(3, 2)).double()
++        indices = {"0.weight": torch.tensor([[0, 1], [2, 0]]), "2.bias": torch.tensor([[1]])}
++        wrapper = unlearning.UnlearnNet(model, indices, initialization)
++        dense = copy.deepcopy(model)
++        dense.load_state_dict(unlearning.reset_parameters(model, indices, initialization))
++        inputs, targets = torch.randn(8, 3, dtype=torch.float64), torch.randn(8, 2, dtype=torch.float64)
++        optimizers = [torch.optim.SGD(m.parameters(), lr=.1) for m in (wrapper, dense)]
++        for _ in range(3):
++            for optimizer in optimizers:
++                optimizer.zero_grad()
++            torch.testing.assert_close(wrapper(inputs), dense(inputs))
++            for net in (wrapper, dense):
++                nn.functional.mse_loss(net(inputs), targets).backward()
++            for name, parameter in dense.named_parameters():
++                mask = torch.zeros_like(parameter)
++                if name in indices:
++                    mask[tuple(indices[name].t())] = 1
++                parameter.grad.mul_(mask)
++            for optimizer in optimizers:
++                optimizer.step()
++        for name, value in wrapper.get_retrained_params().items():
++            torch.testing.assert_close(value, dense.state_dict()[name])
++
++    def test_reference_reset_reopens_dead_batchnorm_relu_channel(self):
++        torch.manual_seed(7)
++        model = nn.Sequential(
++            nn.Conv2d(1, 2, 3, padding=1, bias=False), nn.BatchNorm2d(2),
++            nn.ReLU(), nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(2, 2),
++        )
++        indices = {"1.weight": torch.tensor([[0]]), "1.bias": torch.tensor([[0]])}
++        inputs, targets = torch.randn(8, 1, 4, 4), torch.arange(8) % 2
++        zero = unlearning.UnlearnNet(model, indices)
++        initialized = unlearning.UnlearnNet(model, indices, copy.deepcopy(model))
++        for wrapper in (zero, initialized):
++            nn.functional.cross_entropy(wrapper(inputs), targets).backward()
++        for parameter in zero.parameters():
++            self.assertEqual(torch.count_nonzero(parameter.grad).item(), 0)
++        self.assertGreater(sum(p.grad.abs().sum().item() for p in initialized.parameters()), 0)
++
++    def test_invalid_reference_shape_and_buffer_selection_are_rejected(self):
++        model = nn.Sequential(nn.Linear(3, 3), nn.BatchNorm1d(3))
++        indices = {"0.weight": torch.tensor([[0, 1]])}
++        for reference in ({}, {"0.weight": torch.zeros(1)}):
++            with self.assertRaisesRegex(ValueError, "shape-compatible"):
++                unlearning.reset_parameters(model, indices, reference)
++        with self.assertRaisesRegex(ValueError, "only model parameters"):
++            unlearning.reset_parameters(
++                model, {"1.running_mean": torch.tensor([[0]])}, model.state_dict(),
++            )
++
+     def test_reset_matches_coordinates_and_does_not_mutate_input(self):
+         model = nn.Linear(3, 2).double()
+         before = copy.deepcopy(model.state_dict())
+diff --git a/tests/test_spectral_pipeline.py b/tests/test_spectral_pipeline.py
+index 54f68de..ff3e628 100644
+--- a/tests/test_spectral_pipeline.py
++++ b/tests/test_spectral_pipeline.py
+@@ -38,7 +38,7 @@ class SpectralPipelineTests(unittest.TestCase):
+                 logging.getLogger().removeHandler(handler)
+                 handler.close()
+ 
+-    def run_suite(self, output, audit):
++    def run_suite(self, output, audit, reset_strategy='zero'):
+         params = dict(test_name='tiny_pipeline', target_client=0, train_epochs=2,
+                       trainer_name='sgd', learning_rate=0.05, momentum=0.0,
+                       num_tests=2, num_shadow_models=8 if audit else 0,
+@@ -46,6 +46,7 @@ class SpectralPipelineTests(unittest.TestCase):
+                       spectral_rank=4, spectral_num_power_iters=2,
+                       spectral_seed=3)
+         cases = [dict(unlearning_method='information', unlearning_percentage=p,
++                      reset_strategy=reset_strategy,
+                       retrain_epochs=1, tests=['LiRA'] if audit and p in (0, 100) else [])
+                  for p in (0, 50, 100)]
+         trainer = lambda *args: training.revised_simple_trainer(
+@@ -59,6 +60,24 @@ class SpectralPipelineTests(unittest.TestCase):
+             lambda _: nn.CrossEntropyLoss, lambda _: trainer, lambda *_: None)
+         return Path(output) / params['test_name']
+ 
++    def test_initial_reset_is_recorded_and_used_by_both_recoveries(self):
++        with tempfile.TemporaryDirectory() as output, mock.patch.object(
++            runner, 'UnlearnNet', wraps=runner.UnlearnNet,
++        ) as make_wrapper:
++            suite = self.run_suite(output, False, reset_strategy='initial')
++            self.assertEqual(make_wrapper.call_count, 8)
++            for call in make_wrapper.call_args_list:
++                self.assertIsNotNone(call.kwargs['reset_reference'])
++            for case in range(0, len(make_wrapper.call_args_list), 2):
++                score_reference = make_wrapper.call_args_list[case].kwargs['reset_reference']
++                random_reference = make_wrapper.call_args_list[case + 1].kwargs['reset_reference']
++                self.assertIs(score_reference, random_reference)
++            for repetition in range(2):
++                extra = persistence.load_pickle(suite / f'test_{repetition}', persistence.EXTRA_RESULTS)
++                self.assertEqual(extra['reset_strategy'], ['initial'] * 3)
++                for counts, total in zip(extra['num_reset_per_tensor'], extra['num_reset_params']):
++                    self.assertEqual(sum(counts.values()), total)
++
+     def test_complete_pipeline_and_sparse_lira_plots(self):
+         for audit in (False, True):
+             with self.subTest(audit=audit), tempfile.TemporaryDirectory() as output:
+--- /dev/null
++++ b/experiments/cifar_recovery_ablation.py
+@@ -0,0 +1,255 @@
++"""Checkpoint-only CIFAR ablation; never trains originals, gold models or shadows.
++
++Run with ``python -m experiments.cifar_recovery_ablation --help``.
++Budget checks occur between phases/batches; an in-flight curvature call can
++overrun the budget, in which case recovery is refused and the run is failed.
++Final reporting and serialization are timed separately from the deletion.
++"""
++
++import argparse
++import json
++import math
++import pickle
++import time
++from pathlib import Path
++
++import numpy as np
++import torch
++from torch import nn
++from torch.utils.data import ConcatDataset, DataLoader, Subset
++
++from experiments.datasets import get_datasets
++from experiments.evaluation import evaluate_lira, evaluate_model
++from experiments.models import get_model_class
++from experiments.runner import _curvature_loader
++from fisherunlearn.information.selection import find_informative_params
++from fisherunlearn.information.spectral_wip import estimate_core_score
++from fisherunlearn.unlearning import UnlearnNet
++
++
++def read_pickle(path):
++    with path.open('rb') as stream:
++        return pickle.load(stream)
++
++
++def synchronized_time(device):
++    if device.type == 'cuda':
++        torch.cuda.synchronize(device)
++    return time.perf_counter()
++
++
++def recover(model, train_loader, validation_loader, *, epochs, learning_rate,
++            momentum, device, deadline, batchnorm_mode='train'):
++    """Keep optimizer momentum across epochs; validation never uses targets."""
++    optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum)
++    history = []
++
++    def check_budget():
++        if synchronized_time(device) >= deadline:
++            raise TimeoutError('Deletion budget exhausted; candidate is not validated.')
++
++    for epoch in range(epochs):
++        check_budget()
++        model.train()
++        if batchnorm_mode == 'frozen':
++            for module in model.inner_model['model'].modules():
++                if isinstance(module, nn.modules.batchnorm._BatchNorm):
++                    module.eval()
++        total_loss, total = 0.0, 0
++        for x, y in train_loader:
++            check_budget()
++            x, y = x.to(device), y.to(device)
++            optimizer.zero_grad(set_to_none=True)
++            loss = nn.functional.cross_entropy(model(x), y)
++            loss.backward()
++            optimizer.step()
++            total_loss += loss.item() * len(y)
++            total += len(y)
++        model.eval()
++        val_loss, val_correct, val_total = 0.0, 0, 0
++        with torch.no_grad():
++            for x, y in validation_loader:
++                check_budget()
++                x, y = x.to(device), y.to(device)
++                logits = model(x)
++                val_loss += nn.functional.cross_entropy(logits, y, reduction='sum').item()
++                val_correct += (logits.argmax(1) == y).sum().item()
++                val_total += len(y)
++        check_budget()
++        history.append(dict(epoch=epoch + 1, train_cross_entropy=total_loss / total,
++                            validation_cross_entropy=val_loss / val_total,
++                            validation_accuracy=val_correct / val_total))
++    return history
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--suite', type=Path, default=Path('stat_tests/CIFAR'))
++    parser.add_argument('--repetition', type=int, default=0)
++    parser.add_argument('--checkpoint', type=Path, required=True,
++                        help='Original trained model state_dict for this repetition')
++    parser.add_argument('--output', type=Path, required=True,
++                        help='New output directory (must not already exist)')
++    parser.add_argument('--reset-strategy', choices=['zero', 'initial'], default='initial')
++    parser.add_argument('--batchnorm-mode', choices=['train', 'frozen'], default='train')
++    parser.add_argument('--score-mass', type=float, default=100 * 4 / 9)
++    parser.add_argument('--epochs', type=int, choices=range(1, 6), default=5)
++    parser.add_argument('--max-samples', type=int, default=512)
++    parser.add_argument('--target-max-samples', type=int, default=512)
++    parser.add_argument('--power-iters', type=int, default=3)
++    parser.add_argument('--rank', type=int, default=10)
++    parser.add_argument('--seed', type=int, default=0)
++    parser.add_argument('--batch-size', type=int, default=128)
++    parser.add_argument('--budget-fraction', type=float, default=0.25,
++                        help='Deletion budget / saved gold retraining time, strictly below 1')
++    args = parser.parse_args()
++    if not 0 < args.budget_fraction < 1 or not math.isfinite(args.budget_fraction):
++        parser.error('--budget-fraction must be strictly between 0 and 1')
++    if not 0 < args.score_mass <= 100 or not math.isfinite(args.score_mass):
++        parser.error('--score-mass must be in (0,100]')
++    if min(args.max_samples, args.target_max_samples, args.rank, args.batch_size) < 1 or args.power_iters < 0:
++        parser.error('Sample caps, rank and batch size must be positive; iterations nonnegative')
++    if not args.checkpoint.is_file():
++        parser.error('--checkpoint must name an existing original-model state_dict')
++    if args.output.exists():
++        parser.error('--output already exists; choose a new directory')
++
++    config = read_pickle(args.suite / 'init_params.pkl')
++    if config['dataset_name'] != 'cifar10' or config['model_name'] != 'resnet18':
++        parser.error('This bounded ablation supports the supplied CIFAR10/ResNet18 suite')
++    folder = args.suite / f'test_{args.repetition}'
++    saved = read_pickle(folder / 'score_diagnostics.pkl')
++    labels = read_pickle(args.suite / 'labels.pkl')
++    gold_seconds = read_pickle(folder / 'stage_timings.pkl')['gold_retraining_seconds']
++    train_data, test_data = get_datasets(config)
++    train_ids, target_ids = saved['training_indices'], saved['target_indices']
++    target_set = set(target_ids)
++    retained_ids = [i for i in train_ids if i not in target_set]
++    validation_ids = sorted(set(range(len(train_data))) - set(train_ids))
++    bank_path = args.suite / 'lira_shadow_bank.npz'
++    bank = dict(np.load(bank_path)) if bank_path.exists() else None
++    if bank is not None:
++        candidates = set(bank['candidate_complete_indices'].tolist())
++        validation_ids = [i for i in validation_ids if i not in candidates]
++    if not retained_ids or not validation_ids or not target_set.issubset(train_ids):
++        raise ValueError('Invalid or empty saved training/validation split')
++    model_class = get_model_class(config)
++    model = model_class().eval()
++    model.load_state_dict(torch.load(args.checkpoint, map_location='cpu', weights_only=True))
++    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
++
++    # Check correspondence before spending a deletion budget on the wrong model.
++    # Dataset setup and this provenance check are ablation setup, reported apart.
++    setup_start = synchronized_time(device)
++    check_ids = train_ids[:128]
++    check = evaluate_model(model, Subset(train_data, check_ids), device, args.batch_size)
++    original = read_pickle(folder / 'initial_eval_train_results.pkl')['trained']
++    if not np.array_equal(check['pred'], original['pred'][check_ids]) or not np.allclose(
++        check['loss'], original['loss'][check_ids], rtol=1e-3, atol=1e-3,
++    ):
++        raise ValueError('Checkpoint does not match saved predictions/margins on 128 records')
++    args.output.mkdir(parents=True, exist_ok=False)
++    report = {'arguments': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
++              'gold_retraining_seconds': gold_seconds,
++              'budget_seconds': gold_seconds * args.budget_fraction,
++              'provenance_check_seconds': synchronized_time(device) - setup_start,
++              'status': 'running'}
++    start = synchronized_time(device)
++    deadline = start + report['budget_seconds']
++    try:
++        model.to(device)
++        torch.manual_seed(args.seed)
++        score = estimate_core_score(
++            model, _curvature_loader(Subset(train_data, train_ids), args.max_samples, args.batch_size, args.seed),
++            _curvature_loader(Subset(train_data, target_ids), args.target_max_samples, args.batch_size, args.seed + 1),
++            nn.CrossEntropyLoss(), args.rank, device, num_power_iters=args.power_iters,
++            eigenvalue_threshold=config.get('spectral_eigenvalue_min', 1e-6),
++            relative_eigenvalue_threshold=config.get('spectral_eigenvalue_rtol', 1e-5),
++            power_tolerance=config.get('spectral_power_tolerance', 1e-3),
++        )
++        report['score_seconds'] = synchronized_time(device) - start
++        report['score_diagnostics'] = score['diagnostics']
++        if synchronized_time(device) >= deadline:
++            raise TimeoutError('Score exceeded deletion budget; recovery was not started')
++        selected = find_informative_params(score['diag_by_name'], 'information', args.score_mass)
++        report['selected_per_tensor'] = {k: len(v) for k, v in selected.items()}
++        report['selected_parameters'] = sum(report['selected_per_tensor'].values())
++        report['batchnorm_scale_bias_overlap'] = {}
++        for name, module in model.named_modules():
++            if isinstance(module, nn.modules.batchnorm._BatchNorm) and module.affine:
++                scale = selected.get(name + '.weight', torch.empty(0, 1, dtype=torch.long))
++                bias = selected.get(name + '.bias', torch.empty(0, 1, dtype=torch.long))
++                report['batchnorm_scale_bias_overlap'][name] = len(
++                    set(scale.reshape(-1).tolist()) & set(bias.reshape(-1).tolist())
++                )
++        if not report['selected_parameters']:
++            raise ValueError('No coordinates selected; this is not a deletion candidate')
++        # Both strategies get identical initialization RNG and minibatch order.
++        torch.manual_seed(args.seed + 1000)
++        reference = model_class()
++        recovered = UnlearnNet(model.cpu(), selected,
++                               reset_reference=reference if args.reset_strategy == 'initial' else None).to(device)
++        generator = torch.Generator().manual_seed(args.seed + 2000)
++        train_loader = DataLoader(Subset(train_data, retained_ids), batch_size=args.batch_size,
++                                  shuffle=True, generator=generator)
++        val_loader = DataLoader(Subset(train_data, validation_ids), batch_size=args.batch_size)
++        report['history'] = recover(
++            recovered, train_loader, val_loader, epochs=args.epochs,
++            learning_rate=config['learning_rate'], momentum=config['momentum'],
++            device=device, deadline=deadline, batchnorm_mode=args.batchnorm_mode,
++        )
++        final_model = model_class()
++        final_model.load_state_dict(recovered.get_retrained_params())
++        report['deletion_seconds'] = synchronized_time(device) - start
++        report['cost_fraction_of_gold'] = report['deletion_seconds'] / gold_seconds
++        if report['deletion_seconds'] >= report['budget_seconds']:
++            raise TimeoutError('Deletion exceeded budget while exporting the recovered model')
++        report_start = synchronized_time(device)
++        report['utility'] = {}
++        gold_test = read_pickle(folder / 'initial_eval_test_results.pkl')['shadow_out']['pred']
++        gold_train = read_pickle(folder / 'initial_eval_train_results.pkl')['shadow_out']['pred']
++        for name, dataset, truth, gold_prediction in [
++            ('test', test_data, np.asarray(labels['test']), gold_test),
++            ('retained', Subset(train_data, retained_ids), np.asarray(labels['train'])[retained_ids], gold_train[retained_ids]),
++            ('forget', Subset(train_data, target_ids), np.asarray(labels['train'])[target_ids], gold_train[target_ids]),
++        ]:
++            result = evaluate_model(final_model, dataset, device, args.batch_size)
++            np.savez(args.output / f'{name}_predictions.npz', **result)
++            report['utility'][name] = {'accuracy': float(np.mean(result['pred'] == truth)),
++                                       'disagreement_from_gold': float(np.mean(result['pred'] != gold_prediction)),
++                                       'mean_true_class_margin': float(result['loss'].mean())}
++        if bank is not None:
++            dataset = Subset(ConcatDataset([train_data, test_data]), bank['candidate_complete_indices'].tolist())
++            values = evaluate_lira(final_model, dataset, device, args.batch_size).astype(np.float64)
++            np.save(args.output / 'lira_scores.npy', values)
++            from sklearn.metrics import roc_auc_score, roc_curve
++
++            def likelihood(mask):
++                scores = bank['scores'].astype(np.float64)
++                count = mask.sum(axis=0)
++                mean = np.where(mask, scores, 0).sum(axis=0) / count
++                variance = np.where(mask, (scores - mean) ** 2, 0).sum() / (count - 1).sum()
++                std = max(float(np.sqrt(variance)), 1e-6)
++                return -np.log(std) - 0.5 * ((values - mean) / std) ** 2
++
++            llr = likelihood(bank['shadow_membership']) - likelihood(~bank['shadow_membership'])
++            membership = bank['candidate_membership']
++            fpr, tpr, _ = roc_curve(membership, llr)
++            report['lira'] = {'auc': float(roc_auc_score(membership, llr)),
++                              'tpr_at_fpr_0_01': float(tpr[fpr <= 0.01].max())}
++        torch.save(final_model.state_dict(), args.output / 'recovered_model.pth')
++        torch.save(selected, args.output / 'selected_coordinates.pt')
++        report['reporting_seconds'] = synchronized_time(device) - report_start
++        report['status'] = 'completed_pending_utility_and_privacy_review'
++    except Exception as error:
++        report['status'] = 'failed'
++        report['error'] = str(error)
++        report['elapsed_seconds_on_failure'] = synchronized_time(device) - start
++        raise
++    finally:
++        (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
++    print(json.dumps(report, indent=2))
++
++
++if __name__ == '__main__':
++    main()
+--- /dev/null
++++ b/tests/test_recovery_ablation.py
+@@ -0,0 +1,102 @@
++"""The cheap recovery path must stop on budget and use retained data only."""
++
++import copy
++import json
++import pickle
++from pathlib import Path
++import tempfile
++import time
++import unittest
++from unittest import mock
++
++import torch
++from torch import nn
++from torch.utils.data import DataLoader, TensorDataset
++
++from experiments.cifar_recovery_ablation import recover
++from experiments import cifar_recovery_ablation as ablation
++from fisherunlearn.unlearning import UnlearnNet
++
++
++class RecoveryAblationTests(unittest.TestCase):
++    def setUp(self):
++        torch.set_num_threads(1)
++        torch.manual_seed(4)
++        self.base = nn.Sequential(nn.Linear(2, 3), nn.BatchNorm1d(3), nn.ReLU(), nn.Linear(3, 2))
++        self.selected = {'0.weight': torch.tensor([[0, 0], [1, 1]])}
++        x = torch.randn(16, 2)
++        self.loader = DataLoader(TensorDataset(x, (x[:, 0] > 0).long()), batch_size=8)
++
++    def call(self, model, deadline, batchnorm_mode='train'):
++        return recover(model, self.loader, self.loader, epochs=2, learning_rate=.01,
++                       momentum=.9, device=torch.device('cpu'), deadline=deadline,
++                       batchnorm_mode=batchnorm_mode)
++
++    def test_expired_budget_does_not_change_state(self):
++        model = UnlearnNet(self.base, self.selected)
++        before = copy.deepcopy(model.state_dict())
++        with self.assertRaises(TimeoutError):
++            self.call(model, time.perf_counter() - 1)
++        for name, value in before.items():
++            torch.testing.assert_close(model.state_dict()[name], value, rtol=0, atol=0)
++
++    def test_recovery_changes_only_selected_weights_and_handles_bn_ablation(self):
++        for mode in ('train', 'frozen'):
++            model = UnlearnNet(self.base, self.selected, copy.deepcopy(self.base))
++            before = model.get_retrained_params()
++            history = self.call(model, time.perf_counter() + 30, mode)
++            self.assertEqual([row['epoch'] for row in history], [1, 2])
++            after = model.get_retrained_params()
++            for name, _ in self.base.named_parameters():
++                mask = torch.ones_like(before[name], dtype=torch.bool)
++                if name in self.selected:
++                    mask[tuple(self.selected[name].t())] = False
++                torch.testing.assert_close(before[name][mask], after[name][mask], rtol=0, atol=0)
++            expected_batches = 4 if mode == 'train' else 0
++            self.assertEqual(after['1.num_batches_tracked'].item(), expected_batches)
++
++    def test_checkpoint_command_completes_without_training_baselines(self):
++        x = torch.randn(40, 2)
++        dataset = TensorDataset(x, (x[:, 0] > 0).long())
++        make_model = lambda: nn.Linear(2, 2)
++        model = make_model()
++        outputs = ablation.evaluate_model(model, dataset, torch.device('cpu'), 8)
++        with tempfile.TemporaryDirectory() as temporary:
++            root = Path(temporary)
++            folder = root / 'test_0'
++            folder.mkdir()
++            config = dict(dataset_name='cifar10', model_name='resnet18',
++                          learning_rate=.01, momentum=.9)
++            for path, value in [
++                (root / 'init_params.pkl', config),
++                (root / 'labels.pkl', {'train': dataset.tensors[1].numpy(), 'test': dataset.tensors[1].numpy()}),
++                (folder / 'score_diagnostics.pkl', {'training_indices': list(range(32)), 'target_indices': list(range(8))}),
++                (folder / 'stage_timings.pkl', {'gold_retraining_seconds': 300.0}),
++                (folder / 'initial_eval_train_results.pkl', {'trained': outputs, 'shadow_out': outputs}),
++                (folder / 'initial_eval_test_results.pkl', {'trained': outputs, 'shadow_out': outputs}),
++            ]:
++                with path.open('wb') as stream:
++                    pickle.dump(value, stream)
++            checkpoint = root / 'original.pth'
++            torch.save(model.state_dict(), checkpoint)
++            output = root / 'ablation'
++            arguments = ['ablation', '--suite', str(root), '--checkpoint', str(checkpoint),
++                         '--output', str(output), '--epochs', '1', '--rank', '2',
++                         '--max-samples', '8', '--target-max-samples', '8', '--batch-size', '8']
++            with mock.patch('sys.argv', arguments), mock.patch.object(
++                ablation, 'get_datasets', return_value=(dataset, dataset),
++            ), mock.patch.object(ablation, 'get_model_class', return_value=make_model):
++                ablation.main()
++            report = json.loads((output / 'report.json').read_text())
++            self.assertEqual(report['status'], 'completed_pending_utility_and_privacy_review')
++            self.assertEqual(len(report['history']), 1)
++            self.assertEqual(set(report['utility']), {'test', 'retained', 'forget'})
++            self.assertLess(report['cost_fraction_of_gold'], .25)
++            self.assertTrue((output / 'recovered_model.pth').exists())
++            # The supplied original checkpoint is unchanged.
++            for key, value in torch.load(checkpoint, weights_only=True).items():
++                torch.testing.assert_close(value, model.state_dict()[key])
++
++
++if __name__ == '__main__':
++    unittest.main()

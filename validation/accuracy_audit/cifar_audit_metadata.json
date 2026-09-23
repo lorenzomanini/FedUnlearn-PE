@@ -1,0 +1,36 @@
+{
+  "input": "/Users/antonio/Desktop/FedUnlearn-PE/stat_tests/CIFAR",
+  "checks_passed": [
+    "no missing sweep cases",
+    "same LiRA cases [0,5,9] in each repetition",
+    "finite stored outputs",
+    "zero-reset predictions equal original",
+    "LiRA positives are all and only target records",
+    "LiRA negatives excluded from original training",
+    "45500 original training / 40500 retained training / 5000 forget / 4500 retained holdout"
+  ],
+  "notes": [
+    "All *_pct values are percentages; AUC/TPR use fractions.",
+    "Standard deviations use population convention (ddof=0) over three repetitions.",
+    "retrained means one epoch recovering only reset coordinates; gold means 40 epochs from fresh initialization.",
+    "Artifact field loss is true-class logit margin, not cross-entropy; CE cannot be reconstructed from it.",
+    "Prediction disagreement from gold is a behavioral proxy, not parameter or probability distance.",
+    "No model checkpoints/full logits saved; cannot measure parameter distance or rerun curvature/recovery on the identical trained model.",
+    "Single-deletion cost includes score construction, parameter selection, reset/recovery; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
+    "LiRA uses 8 shadows, 4 IN and 4 OUT per record, a shared fitted bank, and a globally pooled IN variance and OUT variance.",
+    "Retained heldout predictions cover all 4500 original-training exclusions, including LiRA candidate nonmembers removed from validation."
+  ],
+  "lira_candidate_members": 5000,
+  "lira_candidate_nonmembers": 5000,
+  "lira_nonmembers_train_holdout": 1521,
+  "lira_nonmembers_test": 3479,
+  "lira_shadow_in_counts": [
+    4
+  ],
+  "lira_global_std_in": 3.6967365768868254,
+  "lira_global_std_out": 4.8608139249585225,
+  "suite_timings": {
+    "lira_shadow_training_seconds": 4150.883480632212,
+    "total_suite_seconds": 9655.471821425017
+  }
+}

@@ -51,9 +51,14 @@ the gold-standard model retrained without the entire target client. It is not
 used to construct the record-level shadow-OUT distributions. Analyze a suite
 with:
 
-```powershell
-.\.venv\Scripts\python.exe -m analysis.experiments_results <suite-directory>
+```bash
+python -m analysis.experiments_results stat_tests/CIFAR
 ```
+
+The uploaded `stat_tests/CIFAR` directory is the `CIFAR_random` spectral suite
+with three repetitions. The analysis command reads all three by default and
+plots test accuracy and online LiRA results. The suite directory is optional
+for this dataset; pass another directory to analyze a different run.
 
 The faithful shadow-bank path currently supports the centralized `sgd` runner.
 The legacy runner now rejects its former single-benchmark approximation when a
@@ -115,6 +120,34 @@ NUM_TESTS=1 LIRA_SHADOW_MODELS=0 NUM_POWER_ITERS=2 python -m experiments.configs
 ```
 
 ## Checks before a long run
+
+### Recreate the CREATE environment
+
+Create the environment from an interactive GPU allocation so package
+installation does not consume login-node resources. From the repository root:
+
+```bash
+srun --partition=gpu --gres=gpu:1 --cpus-per-task=4 --mem=16G \
+  --time=01:00:00 --pty /bin/bash -l
+module purge
+module load python/3.11.6-gcc-13.2.0
+module load cuda
+virtualenv venv -p "$(which python3)"
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --index-url https://download.pytorch.org/whl/cu126 \
+  -r requirements-create-torch.txt
+python -m pip install -r requirements-create.txt
+python -c 'import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))'
+python -m unittest discover -s tests -v
+exit
+sbatch queue.sh
+```
+
+The checked-in versions match the environment used for the local regression
+and runtime validation. If the environment is created somewhere other than
+`venv` in the repository root, submit with
+`sbatch --export=ALL,VENV_PATH=/absolute/path/to/venv queue.sh`.
 
 Within an allocated GPU job, using the same environment as `queue.sh`:
 

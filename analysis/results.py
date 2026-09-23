@@ -607,175 +607,27 @@ def plot_experiment_results(test_path, num_tests=None, target_fpr=0.001):
           f"{trained_tpr_mean:.4f} ± {trained_tpr_std:.4f}")
 
 
-if __name__ == "__main__":
+
+def main(argv=None):
+    """Analyze the uploaded CIFAR suite by default, or a supplied suite path."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Plot online-LiRA experiment results.")
+    parser.add_argument(
+        "test_path", nargs="?", default="stat_tests/CIFAR",
+        help="Experiment suite directory (default: stat_tests/CIFAR)",
+    )
+    parser.add_argument("--num-tests", type=int)
+    parser.add_argument("--target-fpr", type=float, default=0.001)
+    arguments = parser.parse_args(argv)
+    if not os.path.isdir(arguments.test_path):
+        parser.error(f"suite directory does not exist: {arguments.test_path}")
     plot_experiment_results(
-        os.path.join("stat_tests/EXPERIMENTS", "MNIST_pref"), target_fpr=0.001
-    )
-    raise SystemExit
-
-    plt.style.use("seaborn-v0_8-whitegrid")
-    stat_test_name = "MNIST_pref"
-    stat_tests_path = "stat_tests/EXPERIMENTS" 
-    overload_num_tests = 1  # Set to an integer to override the number of tests
-
-    stat_test_path = os.path.join(stat_tests_path, stat_test_name)
-    if not os.path.exists(stat_test_path):
-        raise FileNotFoundError(f"Stat test path {stat_test_path} does not exist.")
-
-    with open(os.path.join(stat_test_path, "init_params.pkl"), "rb") as f:
-        init_params = pickle.load(f)
-    with open(os.path.join(stat_test_path, "test_params.pkl"), "rb") as f:
-        test_params = pickle.load(f)
-    with open(os.path.join(stat_test_path, "labels.pkl"), "rb") as f:
-        labels = pickle.load(f)
-    with open(os.path.join(stat_test_path, "clients_indices.pkl"), "rb") as f:
-        client_indices = pickle.load(f)
-
-    target_indices = client_indices[init_params["target_client"]]
-
-    print("Init params:")
-    for k, v in init_params.items():
-        print(f"{k}: {v}")
-
-    num_tests = init_params["num_tests"]
-    if overload_num_tests is not None:
-        num_tests = overload_num_tests
-
-    distribution_type = init_params["distribution_type"]
-
-    acc_initial_eval_test = []
-    acc_initial_eval_train = []
-    acc_tests_eval_test = []
-    acc_tests_eval_train = []
-    acc_tests_extra = []
-
-    for i in range(num_tests):
-        test_path = os.path.join(stat_test_path, f"test_{i}")
-        with open(os.path.join(test_path, "initial_eval_test_results.pkl"), "rb") as f:
-            acc_initial_eval_test.append(pickle.load(f))
-        with open(os.path.join(test_path, "initial_eval_train_results.pkl"), "rb") as f:
-            acc_initial_eval_train.append(pickle.load(f))
-        with open(os.path.join(test_path, "eval_test_results.npz"), "rb") as f:
-            acc_tests_eval_test.append(unpack_eval_results(dict(np.load(f))))
-        with open(os.path.join(test_path, "eval_train_results.npz"), "rb") as f:
-            acc_tests_eval_train.append(unpack_eval_results(dict(np.load(f))))
-        with open(os.path.join(test_path, "extra_results.pkl"), "rb") as f:
-            acc_tests_extra.append(pickle.load(f))
-
-    print("Unlearned models keys:", acc_tests_eval_test[0].keys())
-    print("Initial models keys:", acc_initial_eval_test[0].keys())
-            
-    initial_eval_test = merge_initial_results(acc_initial_eval_test)
-    initial_eval_train = merge_initial_results(acc_initial_eval_train)
-    unlearned_eval_test = merge_results(acc_tests_eval_test)
-    unlearned_eval_train = merge_results(acc_tests_eval_train)
-    unlearned_extra = merge_results(acc_tests_extra)
-
-    # [model][test][repetition][entry]
-
-    initial_test_accuracies = compute_accuracies(initial_eval_test, labels["test"])
-    initial_train_accuracies = compute_accuracies(initial_eval_train, labels["train"])
-    initial_target_accuracies = compute_accuracies(initial_eval_train, labels["train"], subset=target_indices)
-    unlearned_test_accuracies = compute_accuracies(unlearned_eval_test, labels["test"])
-    unlearned_train_accuracies = compute_accuracies(unlearned_eval_train, labels["train"])
-    unlearned_target_accuracies = compute_accuracies(unlearned_eval_train, labels["train"], subset=target_indices)
-
-    shadow_target_losses = compute_shadow_losses(initial_eval_train, labels["train"], subset=target_indices)
-    shadow_test_losses = compute_shadow_losses(initial_eval_test, labels["test"])
-    shadow_target_dists, shadow_test_dists = compute_shadow_losses_dists(shadow_target_losses, shadow_test_losses, global_var=True)
-
-
-    unlearned_lira_target = compute_lira_scores(
-        shadow_target_dists['shadow_in'], shadow_target_dists['shadow_out'], unlearned_eval_train, labels["train"], subset=target_indices)
-    unlearned_lira_test = compute_lira_scores(
-        shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], unlearned_eval_test, labels["test"])
-    unlearned_roc_curves = compute_roc_curves(unlearned_lira_target, unlearned_lira_test)
-
-    initial_lira_target = compute_lira_scores(
-        shadow_target_dists['shadow_in'], shadow_target_dists['shadow_out'], initial_eval_train, labels["train"], subset=target_indices)
-    initial_lira_test = compute_lira_scores(
-        shadow_test_dists['shadow_in'], shadow_test_dists['shadow_out'], initial_eval_test, labels["test"])
-    initial_roc_curves = compute_roc_curves(initial_lira_target, initial_lira_test)
-
-    target_fpr = 0.01
-
-    unlearned_tpr_at_fpr = compute_tpr_at_fpr(unlearned_roc_curves, target_fpr=target_fpr)
-    initial_tpr_at_fpr = compute_tpr_at_fpr(initial_roc_curves, target_fpr=target_fpr)
-
-    # Plot ROC curves for initial models
-    plt.figure(figsize=(8, 6))
-    for model_key, style in {
-        "trained": {"label": "Trained", "linestyle": "-", "color": "tab:blue"},
-        "shadow_out": {"label": "Shadow Out", "linestyle": "--", "color": "tab:orange"},
-    }.items():
-        fpr_list = initial_roc_curves[model_key]['fpr'][0]
-        tpr_list = initial_roc_curves[model_key]['tpr'][0]
-        for fpr, tpr in zip(fpr_list, tpr_list):
-            plt.plot(fpr, tpr, linestyle=style["linestyle"], color=style["color"], alpha=0.3)
-        mean_fpr = np.linspace(0, 1, 100)
-        mean_tpr = np.mean([np.interp(mean_fpr, fpr, tpr) for fpr, tpr in zip(fpr_list, tpr_list)], axis=0)
-        plt.plot(mean_fpr, mean_tpr, linestyle=style["linestyle"], color=style["color"], label=style["label"], linewidth=2)
-    plt.plot([0, 1], [0, 1], color='gray', linestyle='--', label='Random Guess')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curves for Initial Models')
-    plt.legend(frameon=False)
-    plt.grid(True, linewidth=0.5, alpha=0.6)
-    plt.tight_layout()
-    plt.show()
-
-    accuracy_styles = {
-        "reset": {"label": "Reset", "linestyle": "-", "marker": "o"},
-        "random_reset": {"label": "Random Reset", "linestyle": "--", "marker": "s"},
-        "retrained": {"label": "Retrained", "linestyle": "-", "marker": "D"},
-        "random_retrained": {"label": "Random Retrained", "linestyle": "--", "marker": "^"},
-    }
-
-    trained_acc_mean, trained_acc_std = summarize_baseline(initial_test_accuracies["trained"][0])
-    benchmark_acc_mean, benchmark_acc_std = summarize_baseline(initial_test_accuracies["shadow_out"][0])
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    plot_metric_vs_unlearning(
-        ax=ax,
-        x_values=unlearned_extra["reset_params_percentage"],
-        metric_dict=unlearned_test_accuracies,
-        label_map=accuracy_styles,
-        ylabel="Test Accuracy",
-        title="Test Accuracy vs Unlearning Percentage",
-        baselines=[
-            {"mean": trained_acc_mean, "std": trained_acc_std, "label": "Trained Baseline", "color": "tab:blue"},
-            {"mean": benchmark_acc_mean, "std": benchmark_acc_std, "label": "Benchmark Baseline", "color": "tab:gray"},
-        ],
-    )
-    plt.tight_layout()
-    plt.show()
-
-    trained_tpr_mean, trained_tpr_std = summarize_baseline(initial_tpr_at_fpr["trained"][0])
-    benchmark_tpr_mean, benchmark_tpr_std = summarize_baseline(initial_tpr_at_fpr["shadow_out"][0])
-
-    fig, ax = plt.subplots(figsize=(9, 5))
-    plot_metric_vs_unlearning(
-        ax=ax,
-        x_values=unlearned_extra["reset_params_percentage"],
-        metric_dict=unlearned_tpr_at_fpr,
-        label_map=accuracy_styles,
-        ylabel=f"TPR at FPR={target_fpr*100:.2f}%",
-        title=f"TPR at FPR={target_fpr*100:.2f}% vs Unlearning Percentage",
-        baselines=[
-            {"mean": trained_tpr_mean, "std": trained_tpr_std, "label": "Trained Baseline", "color": "tab:blue"},
-            {"mean": benchmark_tpr_mean, "std": benchmark_tpr_std, "label": "Benchmark Baseline", "color": "tab:gray"},
-        ],
-    )
-    plt.tight_layout()
-    plt.show()
-
-    print(
-        f"Trained baseline TPR at FPR={target_fpr*100:.2f}%: "
-        f"{trained_tpr_mean:.4f} ± {trained_tpr_std:.4f}"
+        arguments.test_path,
+        num_tests=arguments.num_tests,
+        target_fpr=arguments.target_fpr,
     )
 
 
-
-
-    
-    
+if __name__ == "__main__":
+    main()

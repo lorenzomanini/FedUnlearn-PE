@@ -4,12 +4,11 @@
 #   mkdir -p job_logs
 #   sbatch queue.sh
 # Optional overrides, for example a utility-only run:
-#   NUM_TESTS=1 LIRA_SHADOW_MODELS=0 sbatch queue.sh
-# Optional power-iteration sweep (runs a separate suite per array task):
-#   sbatch --array=2-4 queue.sh
+#   NUM_TESTS=1 LIRA_SHADOW_MODELS=0 sbatch queue
+
 
 # Keep the project account configured for this allocation.
-#SBATCH --account=CASD_PROD
+#SBATCH --account=CASD_prod
 #SBATCH --job-name=spectral_cifar10
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=normal

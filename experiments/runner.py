@@ -6,6 +6,7 @@ from fisherunlearn.information.spectral_wip import estimate_core_score
 
 import fisherunlearn
 
+import copy
 import os
 import pickle
 import random
@@ -475,10 +476,13 @@ class _RevisedTest:
         unlearning_method = test_params_dict['unlearning_method']
         unlearning_percentage = test_params_dict['unlearning_percentage']
         retrain_epochs = test_params_dict['retrain_epochs']
+        reset_strategy = test_params_dict.get('reset_strategy', 'zero')
+        if reset_strategy not in {'zero', 'initial'}:
+            raise ValueError("reset_strategy must be 'zero' or 'initial'")
         whitelist = test_params_dict.get('whitelist', None)
         blacklist = test_params_dict.get('blacklist', None)
 
-        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}")
+        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}, ResetStrategy={reset_strategy}")
 
         selection_start = time.perf_counter()
         informative_params = find_informative_params(self.client_information, unlearning_method, unlearning_percentage, whitelist, blacklist)
@@ -493,10 +497,20 @@ class _RevisedTest:
         if num_reset_params != 0:
             recovery_start = time.perf_counter()
             reset_model = self.model_class()
-            reset_state_dict = reset_parameters(self.trained_model, informative_params)
+            # Copy before load_state_dict overwrites the fresh model's tensors.
+            # The same initialization is used by the matched random baseline.
+            reset_reference = (
+                copy.deepcopy(reset_model.state_dict())
+                if reset_strategy == 'initial' else None
+            )
+            reset_state_dict = reset_parameters(
+                self.trained_model, informative_params, reset_reference=reset_reference,
+            )
             reset_model.load_state_dict(reset_state_dict)
 
-            retrainer = UnlearnNet(reset_model, informative_params) 
+            retrainer = UnlearnNet(
+                reset_model, informative_params, reset_reference=reset_reference,
+            )
             self.trainer_function(retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
             retrained_model = self.model_class()
             retrained_model.load_state_dict(retrainer.get_retrained_params())
@@ -507,10 +521,14 @@ class _RevisedTest:
             random_params = find_informative_params(self.client_information, 'random', reset_params_percentage, whitelist, blacklist)
 
             random_reset_model = self.model_class()
-            random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params)
+            random_reset_state_dict = reset_parameters(
+                self.trained_model.cpu(), random_params, reset_reference=reset_reference,
+            )
             random_reset_model.load_state_dict(random_reset_state_dict)
 
-            random_retrainer = UnlearnNet(random_reset_model, random_params)
+            random_retrainer = UnlearnNet(
+                random_reset_model, random_params, reset_reference=reset_reference,
+            )
             self.trainer_function(random_retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
             random_retrained_model = self.model_class()
             random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
@@ -527,6 +545,10 @@ class _RevisedTest:
         extra_results = {}
 
         extra_results['num_total_params'] = self.num_total_params
+        extra_results['reset_strategy'] = reset_strategy
+        extra_results['num_reset_per_tensor'] = {
+            name: len(indices) for name, indices in informative_params.items()
+        }
         extra_results['num_reset_params'] = num_reset_params
         extra_results['reset_params_percentage'] = reset_params_percentage
         extra_results['selection_seconds'] = selection_seconds

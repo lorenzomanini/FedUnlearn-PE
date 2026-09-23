@@ -1,0 +1,604 @@
+
+=== PAGE 1 ===
+                              From Dataset Uncertainty
+                       to a Curvature Score for Unlearning
+
+
+                A step-by-step derivation for a graduate physics background
+
+Purpose.Wewanttorankneural-networkweightsforaselectiveresetafterarequesttoforgeta
+targetdataset.Therouteistomodelhowthedistributionoftrainedparameterschangeswhen
+thetargetcontributionisvaried,quantifythatchangewithFisherinformation,andextracta
+computablecomponentindependentoftheunknownuncertaintycovarianceG.
+Thephysicalpictureisaharmonicwellsubjecttoanuncertain,staticforce.Differentpossible
+retaineddatasetsproducedifferentforces;deterministictrainingselectsthecorrespondingequilib-
+riumpositions.Thedistributionoftheseequilibriaisderivedfromtheforcedistribution.Itisnot
+assumedtobeathermalequilibriumdistribution.
+Theargumentproceedsintheorder
+
+                                 uncertaintyaboutretaineddata
+                                                 ⇓
+                              anuncertainforceinaquadraticloss
+                                                 ⇓
+                           aprobabilitydensityfortrainedparameters
+                                                 ⇓
+                             localdistinguishabilityoftargetweights
+                                                 ⇓
+                      aG-independentinformationcoreandweightscores.
+
+Theprobabilisticassumptions,algebraicconsequences,andscoredefinitionarekeptseparate
+throughout.Boththediagonalandnon-diagonalcorescoreswillfollowfromthesamedecomposi-
+tion.
+
+1 Whatisrandom,andfromwhoseperspective?
+
+LetDT bethetargetdatasetandDR theretaineddataset. Theactualdatasetsarefixed.
+Nevertheless,anattackerwhodoesnotknowDRcanassignprobabilitiestoitspossiblevalues.
+Thisisuncertaintyaboutafixedobject,notaclaimthattheactualdatasetfluctuatesduring
+training.
+WeassumetheattackerknowsthecandidateDTandconditionontherealizedtrainingrandomness,
+suchasinitializationandminibatchorder.Underthisconvention,trainingisadeterministicmap
+foreachpossibleretaineddataset.Write
+                                       Θt =At(DR,DT;r0),                              (1)
+wherer0denotesthefixedtrainingrealizationandtcontrolstargetinclusion. Uppercase Θt
+denotestherandomvariableobtainedbyconsideringpossibleDR;lowercaseθdenotesapossible
+valueofthatvariable.
+Let Π(dDR)betheattacker’sbeliefaboutretaineddata,conditionalonsideinformationavailable
+beforeobservingthereleasedmodel.ThenforanysetofparametervaluesE,
+                                       ∫
+                         Pt(Θt∈E) =      1{At(DR,DT;r0)∈E}Π(dDR).                  (2)
+
+                                                 1
+
+=== PAGE 2 ===
+Equation(2)  isthepush-forwardofthedatasetbelief:probabilityassignedtopossibledatasetsis
+transportedthroughthetrainingmap.Noadditionalrandomnessisrequired.
+ThefamilyPtgivesprobabilitiesofpossibleobservationsunderaspecifiedvalueoft.Heretisa
+parameterindexinghypotheses,notarandomvariablethatmustitselfbeassignedaprior.After
+observingamodel,anattackercouldcomparetheselikelihoodsorcombinethemwithaprioront;
+neitherstepisneededtodefinetheFisherinformation.
+Consequenceformodeling.Wemustapproximatehowuncertaindataaffecttraining.Merely
+knowingthecurvatureofthelossdoesnotspecifytheprobabilitylawin(2) . Inparticular,a
+Gibbsdensityproportionalto exp(−L/T)wouldbeanadditionalassumption.
+
+2 Turntargetinclusionintoalocalresponseparameter
+
+Set
+                          αR =NRN,   αT =NTN,   N =NR+NT,                   (3)
+
+withbothsubsetsnonempty.LetLRandLTbelossesaveragedovertheirrespectivesubsets,and
+define
+                                  Lt(θ) =αRLR(θ)+tαTLT(θ).                          (4)
+Thephysicalalternativesaret = 1(targetincluded)andt = 0(targetabsent). Intermediate
+tcontinuouslychangesthestrengthofthetargetcontribution.Valuesinasmallopeninterval
+around 1areamathematicalprobeofsensitivity,includingslighttargetoverweighting.
+Att=0,theobjectiveisproportionaltotheretained-dataloss.Thispreservesexactminimizers,
+althoughitneednotpreservefinite-timeoptimizertrajectories. Ourlocalmodelwilldescribe
+stationarysolutionsof(4).
+Chooseareferencetrainedpoint ˜θ∈Rpwith
+
+                                           ∇L1(˜θ) = 0.                                 (5)
+
+Allderivativesbelowareevaluatedatthisfixedpoint.Define
+                      H =∇2L1(˜θ),   HT =∇2LT(˜θ),   gT =∇LT(˜θ).               (6)
+
+Equation(5)implies
+
+                       ∇Lt(˜θ) =αT(t−1)gT,   Ht =H +αT(t−1)HT.                (7)
+
+Therearethereforetworesponsestochangingt:aforce-likechangeofthegradientandastiffness-
+likechangeoftheHessian. Full-datastationaritydoesnotimplygT = 0: retainedandtarget
+gradientscancancel.
+Scope.Aderivativeatt =1measureslocalsensitivity.Itdoesnotdeterminethedistinguishability
+oftheendpointst = 0andt = 1withoutfurthercontrolalongthepath.
+
+3 Choosethecoordinatesinwhichaquadraticmodelismean-
+     ingful
+
+NearalocalminimumtheHessiancanhavemanyverysmallorzeroeigenvalues[1]. Flatness
+concernscollectivedirections,notnecessarilyindividualweights.Forexample,
+                                 (1   1)
+                            H =    1   1 ,        12x⊤Hx = 12(x1+x2)2.                    (8)
+
+
+                                                 2
+
+=== PAGE 3 ===
+Thedirection (1,−1)isflat,althoughbothdiagonalentriesequalone.ReplacingHbyitsdiagonal
+eliminatesthatflatdirection.
+WechooseafixedorthonormalmatrixU∈Rp×randrestrictdisplacementsto
+
+                                   θ= ˜θ+Uz,   U⊤U =Ir.                           (9)
+
+ThecolumnsofUmaybepositive-curvatureeigenvectors,buttheinitialderivationneedsonly
+
+                                        A=U⊤HU≻0.                              (10)
+
+Alsodefine
+                    F =U⊤HTU,   g =U⊤gT,   At =A+αT(t−1)F.             (11)
+PositivityofAensurespositivityofAtinasufficientlysmallneighborhoodof1.ThematrixUis
+fixedastvariesandacrosshypotheticaldatadraws.Otherwisethemovementofthebasiswould
+introduceadditionaleffects.
+Modelingchoice.ThecoordinatesorthogonaltoUarefixedinthissurrogate.Thisdoesnot
+provethattheyhavezerouncertaintyorzeroinformationintheactualnetwork.Rather,itdefines
+thepartofthelocalproblembeingmodeled.Probabilitydensitieswillbeordinaryr-dimensional
+densitiesinz,notfull-dimensionaldensitiesinθ.
+Thereferencepoint ˜θisthefixedexpansionpointofthislocalfamily.Usinganobservedtrained
+modeltoconstructalocalapproximationisnotthesameoperationasconditioningtherandom
+variable Θtonitsexactobservedvalue,whichwouldremoveitsuncertainty.
+
+4 Replaceuncertainretaineddatabyanuncertainstaticforce
+
+4.1  Theapproximationbeingmade
+
+Asmallchangeoftheretaineddatasetchangestheloss.Expandingthatchangelocallyinzgives
+aconstant,alinearterm,andacurvatureperturbation.Weretainthelinearterm:
+
+                                    δℓR(z)≈constant+ζ⊤z.                           (12)
+
+ThevectorζincludestheretainedweightαRandprojectionontoU.Constantsdonotaffectthe
+minimizer.Randomchangesofcurvaturearediscardedinthissurrogate.
+IfδDRdenotesalocalvectorrepresentationofretained-datauncertainty,andJRmapsittoa
+perturbationof∇LR(˜θ),then
+                                        ζ≈αRU⊤JRδDR.                              (13)
+Forcenteredperturbationswithcovariance ΩR,
+
+                                G := Cov(ζ)≈α2RU⊤JRΩRJ⊤RU.                        (14)
+
+ThisexpressionexplainswhatGmeans:itmeasuresuncertaintyinthegradient,notcurvature,
+andnotthespreadofoptimizeriterates.
+
+4.2  Adeclaredprobabilitymodel
+
+Weassume
+                              ζ∼N(0,G),   G≻0,   ∂tG = 0.                     (15)
+Gaussianityisamodelfortheaggregategradientperturbation.Aquadraticlossbyitselfdoes
+notmakearbitrarydatauncertaintyGaussian.Anonzeromeanperturbationwouldrequirean
+
+                                                3
+
+=== PAGE 4 ===
+additionaldeterministiclinearterm;hereweassumetheuncertaintyiscenteredatthereference
+dataset.
+HoldingGfixedismotivatedbyvaryingtheweightofaknowntargetwhileleavingretained-data
+uncertaintyunchanged.Itisstillanassumption:uncertaincurvatureorevaluatingperturbations
+atmovingoptimacanmaketheeffectiveuncertaintydependont. PositivityofGprovidesa
+regularGaussiandensityinthechosensubspace. Ifitfails,thesupportmustbereconsidered
+ratherthanrepairedsilentlybyaninverse.
+Combiningthesechoiceswith(7)givesthecompleterandomlocalobjective
+
+                    ℓt(z;ζ) =ct+[bt+ζ]⊤z+ 12z⊤Atz,   bt =αT(t−1)g.                              (16)
+
+Thisisaharmonicwellwithaknownforceshiftbtandanuncertainforceζ.Theforceisdrawn
+onceforahypotheticalretaineddatasetandremainsfixedwhileitsequilibriumisfound.Itis
+analogoustoquencheddisorder,notatime-dependentthermalbath.
+FromthispointthroughtheFisherdecomposition,thecalculationsareexactwithin(16)  .The
+approximationwasthechoiceofthatmodel.
+
+5 Transporttheforcedistributiontoparameterspace
+
+5.1  Theequilibriummap
+
+Minimizingthelocallossgives
+                            AtZt+bt+ζ= 0,   Zt =−A−1t  (bt+ζ).                   (17)
+HereZtisrandombecauseζisrandomintheattacker’sensemble,eventhoughtheminimization
+foranygivenζisdeterministic.Thisistheexplicitlocalversionofthepush-forwardin(2).
+Toobtainitsmean,uselinearityofexpectation. Toobtainitscovariance,use Cov(MX) =
+MCov(X)M⊤.SinceAtissymmetric,
+
+                      mt =EZt =−A−1t bt,       Σt = Cov(Zt) =A−1t GA−1t .                       (18)
+AnaffinetransformationofaGaussianvectorisGaussian,soZt∼N(mt,Σt).
+
+5.2  Whythedensityhasthiscovariance
+
+Thesameresultfollowsdirectlyfromachangeofvariables.Theforcedensityis
+
+                                     q(ζ) = exp[−ζ⊤G−1ζ/2](2π)r/2(detG)1/2.                           (19)
+
+Equation(17)   hasinverseζ=−Atz−bt. Probabilityincorrespondingvolumeelementsmust
+agree:pt(z)dz =q(ζ)dζ.TheabsoluteJacobiandeterminantis detAt>0.Hence
+                                                [                               ]
+                  pt(z) =         detAt(2π)r/2(detG)1/2 exp−12(Atz+bt)⊤G−1(Atz+bt).             (20)
+
+TheprecisionmatrixisAtG−1At,whoseinverseisexactly(18)  .Thedeterminantprefactorensures
+normalizationandalsochangeswitht.
+Inonedimension, arandomforceofvariancev actingonaspringofstiffnessat produces
+equilibrium-positionvariancev/a2t.Athermaloscillatorwouldinsteadhavevarianceproportional
+to 1/at.Thesedescribedifferentensembles.OurGaussianlawisthereforenotinferredfroma
+Boltzmannanalogy.
+
+                                                 4
+
+=== PAGE 5 ===
+5.3  Likelihoodversusprobabilityofanexactobservation
+
+Foracontinuousdistribution,anexactvaluezobshasprobabilityzero.Thedensityisnonetheless
+useful:forasmallneighborhoodofvolume ∆V,
+
+                                   Pt(Ztnearzobs)≈pt(zobs)∆V.                         (21)
+
+Ratiosofdensitiescomparehowplausiblethesameobservationisunderdifferentt,withthe
+volumefactorcanceling. Viewingpt(zobs)asafunctionoftgivesthelikelihood. Itisnota
+posteriordistributionfort.
+
+6 MeasurelocaldistinguishabilitywithFisherinformation
+
+6.1  Thestatisticalscoreanditsexpectation
+
+Definethelog-likelihoodderivative
+
+                                        St(z) =∂tlogpt(z).                             (22)
+
+Instatisticsthisiscalledthescore.Itisascalarfunctionoftheobservedvectorz.Itisdistinct
+fromtheper-weightTargetInformationScorethatwewilldefinelater.
+Forasmallchange dt,
+                                  logpt+dt(z)pt(z)   =St(z)dt+O(dt2).                        (23)
+
+ThusSt(z)measuresthelocalresponseofthelikelihoodforthatobservation.Underdifferentiation
+ofanormalizeddensity,                        ∫
+                                Et[St(Z)] =     ∂tpt(z)dz =∂t1 = 0.                      (24)
+
+Theaveragesignedresponsevanishes,soitsmeansquaremeasuresthetypicalresponsemagnitude:
+
+                                         I(t) =Et[St(Z)2].                              (25)
+
+Theexpectationisoverhypotheticalobservationsunderpt,notoverdifferentvaluesoftandnot
+atimeaveragealonganoptimizertrajectory.
+
+6.2  Connectiontodistinguishability
+
+ForthisregularGaussianfamily,therelativeentropybetweennearbydistributionsobeys
+                                        ∫
+                     DKL(pt∥pt+dt) :=      ptlog ptpt+dt dz = 12I(t)dt2+o(dt2).              (26)
+
+Toseethecoefficient,expandlogpt+dttosecondorder.Thefirsttermintegratestozerobythe
+previousidentity;differentiatingthatidentityoncemoregivesEt[∂2t logpt] =−I(t).
+Equation(26)   iswhyFisherinformationisrelevanthere:largeI(1)meansthatsmallchangesin
+targetweightproducemoredistinguishableparameterdistributionsalongourchosenpath. It
+doesnotbyitselfgivetheoptimalerrorofthebinarytestbetweent = 0andt = 1.
+
+
+
+
+
+
+
+                                                  5
+
+=== PAGE 6 ===
+7 ComputethetwoGaussianresponsechannels
+
+7.1  Differentiatethemoments
+
+Write Σ = Σ 1 =A−1GA−1anduseadotforaderivativeatt = 1.Since
+
+                                    dA−1t
+                                      dt   =−A−1t  (αTF)A−1t ,                           (27)
+themomentsin(18)give
+
+                        ˙m =−αTA−1g,        ˙Σ =−αT(A−1FΣ+ΣFA−1).                              (28)
+
+Att =1,b1 =0andm1 =0.Indifferentiatingthemean,thetermcontaining∂tA−1t  ismultiplied
+byb1andthereforevanishes.Matrixorderisretainedinthecovariancederivative;commutation
+hasnotbeenassumed.
+
+7.2  WhiteningreducestheexpectationtostandardGaussianmoments
+
+FortheGaussiandensity,directdifferentiationgives
+                                             [                           ]
+                       S1(z) =  ˙m⊤Σ−1z+ 12   z⊤Σ−1˙ΣΣ−1z−Tr(Σ−1˙Σ)        .                (29)
+
+Thetracetermcomesfromdifferentiatingthenormalization,through∂tlogdetΣt =Tr(Σ−1t ∂tΣt).
+Define
+                     Y = Σ−1/2Z,   a= Σ−1/2 ˙m,   Q= Σ−1/2˙ΣΣ−1/2.              (30)
+AtthereferencepointY∼N(0,Ir)andQ =Q⊤. Whiteningissimplyafixedchangeof
+coordinatesthatturnsthecovarianceellipsoidintoasphere.Then
+
+                               S1(Y) =a⊤Y + 12(Y⊤QY−TrQ).                       (31)
+
+ThefirsttermislinearintheGaussianvariable,thesecondacenteredquadraticform. Their
+crossexpectationvanishesbecauseitcontainsoddGaussianmoments.Wick’srulegives
+
+                     E[(a⊤Y)2] =a⊤a,      E[(Y⊤QY−TrQ)2] =2Tr(Q2).              (32)
+
+Substitutionin(25)yields
+                                                     Σ−1/2˙ΣΣ−1/22
+                          I(1) =      ˙m⊤Σ−1 ˙m+12               F .                       (33)
+                                  mean displacement                
+                                                    covariance deformation
+
+Themeanchannelisasquaredsignal-to-uncertaintydistance.Thecovariancechanneldetects
+changesofwidthandorientationevenwhenthemeanisstationary.Theseareresponsechannels,
+notseparatesourcesofrandomness:bothariseherefromretained-datauncertainty.
+
+8 IsolatethepartthatdoesnotdependonG
+
+8.1  Normalizebythefull-datacurvature
+
+Define
+                  B =A−1/2FA−1/2,       Ω =A−1/2GA−1/2,   h=A−1/2g.            (34)
+
+                                                 6
+
+=== PAGE 7 ===
+ThematrixBmeasurestargetcurvaturerelativetofull-datacurvature.Thematrix Ω measures
+gradientuncertaintyinthesamenormalizedgeometry.Theirrelativeorientationwillbeimportant.
+Forapositive-definitematrix,thesymmetricinversesquarerootisobtainedbydiagonalizingit
+andreplacingeacheigenvalueλbyλ−1/2.Throughout,∥M∥2
+                                                                 F = Tr(M⊤M) =∑ijM2ijdenotes
+thesquaredFrobeniusnorm. Theseoperationsconcernmatrices,notentrywisereciprocalsor
+squares.
+ApplythefixedtransformationW =A1/2Z.ItpreservesFisherinformationbecauseitsJacobian
+isindependentoftandhencedropsoutofthelog-likelihoodderivative.Att = 1,thecovariance
+ofWis Ω,itsmeanderivativeis−αTh,anditscovariancederivativeis−αT(BΩ+ΩB).
+Puttingtheseinto(33)gives
+                             [              C +C⊤2 ]
+                  I(1) =α2T    h⊤Ω−1h+ 12              F  ,   C = Ω−1/2BΩ1/2.           (35)
+
+AlthoughBissymmetric,Cneednotbe:curvatureanduncertaintycanhavedifferenteigenvectors.
+
+8.2  Anexactdecomposition,notaguessaboutsmallterms
+
+ForanyrealmatrixC,
+                                  1C +C⊤2        2
+                                  2           F =∥C∥F +Tr(C2),                        (36)
+                                  1C−C⊤2         2
+                                  2           F =∥C∥F−Tr(C2).                        (37)
+
+Subtractingtheseidentities,andusingsimilarityofCandB,yields
+                            1 C +C⊤2                  C−C⊤2
+                            2            F = 2Tr(B2)+ 12               F.                   (38)
+Therefore,
+                             I(1) =     2α2T Tr(B2)
+
+                                     Icore: G-independent
+                                                           C−C⊤2                            (39)
+                                     +α2Th⊤Ω−1h +α2T2            F .
+                                           Imean                   
+                                                           Icorrection
+Bothdiscardedtermsarenonnegative,so
+
+                          I(1)≥Icore = 2α2T Tr(B2) = 2α2T Tr[(A−1F)2].                            (40)
+
+Thisisanexactlowerboundwithinourmodel,evenifthediscardedtermsarelarge.Callingthe
+coreanaccurateapproximationwouldrequireadditionalevidence.
+
+8.3  Whenistheboundattained?
+
+Thecovariancecorrectioniszeroexactlywhen
+
+                                   C =C⊤⇐⇒BΩ = ΩB.                         (41)
+
+OneexampleisG =τA,τ>0,forwhich Ω=τIr.ThusIcoreistheminimumcovariance-channel
+informationoverallpositive-definiteG.Equalityfortotalinformationadditionallyrequiresg = 0.
+
+
+
+                                                  7
+
+=== PAGE 8 ===
+Themeancontributionequalsα2Tg⊤G−1g.Ifuncertaintyisverysmall,evenasmallresidualtarget
+gradientcangivesubstantialmeaninformation.Droppingitdefinesthecore;itdoesnotestablish
+thatthemeanchannelisnegligible.
+Thecovariancecorrectionmeasuresmismatchbetweentargetresponseanduncertaintygeometry.
+Inaneigenbasisof Ω,witheigenvaluesωiandrepresentation ˜B,(ωi         )
+                                              ∑   ˜B2ij
+                              Icorrection =α2T          ωj +ωjωi−2     .                     (42)
+                                              i<j
+Onlycouplingsbetweendirectionswithdifferentuncertaintylevelscontribute.Noassumption
+thatAandFcommutewasused.
+
+9 Convertjointinformationintoscoresforindividualweights
+
+9.1  Theextradefinitionrequired
+
+Equation(40)   isascalarforthejointobservationofallmodeledcoordinates.Itdoesnotuniquely
+specifywhichoriginalweightshouldbereset.Wenowmakeanexplicitallocationchoice:
+                              TIScore(θi) = [UB2U⊤]ii =∥(UB)i,:∥2                                 (43)
+                                                                     2.
+Theinformation-scaledallocationis
+                                       scorei     = 2α2T TIScore(θi).                            (44)
+SymmetryofBmakeseachscorenonnegative.OrthonormalityofUgives
+                          p∑
+                            scorei     = 2α2T Tr(UB2U⊤) = 2α2T Tr(B2) =Icore.                (45)
+                         i=1
+Thustheallocationpreservesthetotalcoreexactly.Itisinvariantunderachangeoforthonormal
+basiswithinthesamesubspace,butistiedtotheoriginalparameterizationinwhichweightsare
+modified.
+Thedefinitionhasausefulreferenceinterpretation.UnderfixedG=τA,thesymmetric-whitened
+covariancederivativefromSection7isQ =−2αTB. Itscovariance-informationallocationin
+originalcoordinatesisprecisely  12[UQ2U⊤]ii =scorei  .Thecoreallocationthereforeagreeswitha
+fullcovariance-channelallocationinthisspecificuncertaintymodel.
+ForarbitraryG,however,theinequalityonthesumdoesnotimplyacoordinatewiseinequality
+againstafull-informationallocation.Nordoesresettingweightinecessarilyremovescorei  informa-
+tion. Correlatedobservationsshareinformation,andresettingchangesthedistributionrather
+thansubtractinganadditiveinformationaccount.
+
+9.2  ExpressionusingthefullHessian
+
+IfH⪰0andUspansitscompletepositiveeigenspace,then
+                                      UBU⊤=H+/2HTH+/2.                           (46)
+HereH+/2isthesymmetricsquarerootoftheMoore–Penrosepseudoinverse:invertthepositive
+eigenvalues,taketheirsquareroots,andsettheinversetozeroontheomittednullspace.The
+corescorebecomes                              [(
+                                TIScore(θi) =    H+/2HTH+/2)2]                                    (47)
+                                                                   ii.
+Thezeroactiononthenullspaceisbookkeepingforthesupportrestriction. Itshouldnotbe
+interpretedasprovingzeroparameteruncertaintythere.
+
+                                                  8
+
+=== PAGE 9 ===
+10 Obtainthediagonalcorefromthesameargument
+
+AssumethecurvaturematricesarediagonalintheoriginalweightcoordinatesonanindexsetJ:
+
+                    H = diag(hi),   HT = diag(hT,i),   hi>0   (i∈J).             (48)
+
+LetUselectthosecoordinates.Then
+                                                 (hT,i)
+                                       B = diag     hi
+                                                         i∈J.                             (49)
+Substitutionintothealreadyderivedcoreanditsallocationyields
+
+                                   ∑   (hT,i)2                       (hT,i)2
+                       Icore = 2α2T       hi    ,       TISdiagcore(θi) =hi   .                  (50)
+                                   i∈J
+
+ThisisthediagonalG-independentcore.NodiagonalityofGwasneeded:thecoredecomposition
+isvalidevenifgradientuncertaintyremainscorrelated.Diagonalcurvaturealonedoesnotimply
+independentparameterfluctuations.
+
+10.1  Ascalarcheckthatmakesthecancellationtransparent
+
+IfGisalsodiagonal,letitsentriesbevi> 0.ThecoordinatesarethenindependentGaussians,
+andforcoordinatei,
+
+     mi(t) =−αT(t−1)gihi(t)  ,   qi(t) :=Var(Zt,i) = vihi(t)2, hi(t) =hi+αT(t−1)hT,i.   (51)
+
+Thescalarversionof(33)is                              (˙qi)2
+                                        Ii =  ˙m2iqi  + 12qi .                             (52)
+
+Thelogarithmicvariancederivativeis
+                                ˙qi        ( vi    )⏐⏐⏐⏐1 =−2αThT,i
+
+                                qi =∂tlog    hi(t)2              hi,                       (53)
+
+becauseviisfixedint.Therefore,
+                                             [g2i     (hT,i)2]
+                                    Ii =α2T    vi +2    hi      .                          (54)
+
+Theuncertaintymagnitudecancelsfromthefractionalwidthchange,butremainsinthemean
+signal-to-uncertaintyterm. Discardingthelatterleavesexactly(50)  ,includingitsinformation
+prefactor.
+Forhi = 0,theinverse-curvatureformulaisundefined. Suchcoordinatesmustbeexcludedor
+handledbyanexplicitlyalteredmodel;theyareassignedzeroonlywithintherestrictedscore.
+Asmallpositivethresholdcanbeusednumericallyandshouldbereported. Whentheactual
+Hessiansarenotdiagonal,usingtheirdiagonalsisacomputationalapproximationandneednot
+preserverankorinformationgeometry.
+
+
+
+
+
+
+
+                                                  9
+
+=== PAGE 10 ===
+11  Computethenon-diagonalcorewithoutformingfullmatrices
+
+TheprecedingderivationdidnotrequireHandHTtoshareeigenvectors.Thisremainstrueof
+thecomputationalprocedure.
+Step1:choosethesubspace.UseHessian–vectorproductstoestimaterpositive-curvature
+directionsofH,forexamplebyLanczosorsubspaceiteration.DiagonalizethesmallRayleigh–Ritz
+matrixsothat
+                       U⊤HU = Λ =diag(λ1,...,λr),   λk>λmin>0.                (55)
+Forexacteigenvectorsthisisaspectralrestriction;approximateeigenpairresidualsHU−UΛ
+quantifynumericalaccuracy.TheresultingUisthenfixed.Matrix-freespectralanalysisavoids
+storingthecompleteHessian[2].
+Step2:retaintargetcorrelationsinsidethatsubspace.Compute
+
+                       V =HTU,   F =U⊤V,   Br = Λ−1/2FΛ−1/2.                (56)
+
+Although Λisdiagonal,Fgenerallyisnot.KeepallentriesofF.ReplacingFbyitsdiagonal
+woulddiscardthecouplingsthatthisextensionisintendedtoretain.
+Step3:returnonenumberperoriginalweight.FormZ =UBrandcompute
+
+                                                      r∑
+                                      TIScore,r(θi) =    Z2ik.                                 (57)
+                                                     k=1
+
+Thisformulausesrownorms;itneverconstructsUB2rU⊤.Thesumrule
+                                    ∑                       2
+                                        TIScore,r(θi) =∥Br∥F                            (58)
+                                      i
+isadirectimplementationcheck.Aftersubspaceestimation,thetargetproductsrequirerHessian–
+vectorproducts,andprojectionplusscoreassemblyrequireO(pr2)densearithmeticandO(pr+r2)
+storage.
+Largecurvatureeigenvaluesdonotnecessarilyidentifythelargesttarget-informationratios.
+Truncationgivesthecoreoftheselectedsurrogateandrequiresrankandthresholdsensitivity
+checks.Blockapproximationscanreducecostsbutmayremoveflatdirectionsthatinvolvemultiple
+blocks.AGGNreplacementordampingchangesthecurvaturemodelandshouldbeidentifiedas
+such.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                10
+
+=== PAGE 11 ===
+12 Whatthescoresupportsinanunlearningprocedure
+
+Tousethescore,sortweightsindecreasingscoreorderwithineachchosenparametergroupand
+resetthesmallestprefixwhosecumulativescorereachesafractionγ∈(0,1]ofthegrouptotal.
+Groupswithzerototalscorerequirenoselectionunderthisrule.Thecommonfactor 2α2Tcanbe
+omittedforrankingsandscore-massfractionswithinonedeletionrequest.
+Thelogicalstatusoftheconstructionisnowexplicit:
+
+   1.Model:conditionontrainingrandomness,restricttoafixedcurvedsubspace,andrepresent
+      retained-datauncertaintybyafixedGaussiangradientperturbation.
+
+   2.Deriveddistribution: deterministicminimizationtransportsthatperturbationtoa
+      GaussianparameterlawwithcovarianceA−1t GA−1t .
+
+   3.Exactinformationresult:FisherinformationsplitsintoaG-independentcurvaturecore
+      andtwononnegativeterms.
+
+   4.Scoredefinition:allocatethecorebythediagonalofUB2U⊤,obtainingboththediagonal
+      ratioscoreanditsnon-diagonalgeneralization.
+
+   5.Empiricalintervention:usetheallocationtoproposeresetcoordinates,thenmeasure
+      forgettingandretainedutilityafterthereset.
+
+Thefixed-Gconditioniscentral.IfGchangeswitht,thecovariancederivativegainsA−1 ˙GA−1
+andthestatedcorelowerboundneednothold.Likewise,alargeresetneednotbedescribedbya
+localquadraticexpansion.
+Theframeworkconsequentlyjustifiesacomputableselectionstatisticunderstatedassumptions.
+Alowerboundonpre-resetlocalinformationdoesnotcertifylowpost-resetleakage,binary
+membershipindistinguishability,orequivalencetoretraining. Thoseareseparateevaluation
+targets.
+
+References
+
+[1]L.Sagun,U.Evci,V.U.Güney,Y.Dauphin,andL.Bottou.EmpiricalAnalysisofthe
+   HessianofOver-ParametrizedNeuralNetworks.arXiv:1706.04454,version3,2018. https:
+   //arxiv.org/abs/1706.04454.
+
+[2]Z.Yao,A.Gholami,K.Keutzer,andM.W.Mahoney.PyHessian:NeuralNetworksThroughthe
+   LensoftheHessian.arXiv:1912.07145,version3,2020. https://arxiv.org/abs/1912.07145.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                 11

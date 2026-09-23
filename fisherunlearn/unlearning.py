@@ -28,14 +28,39 @@ def _flat_indices(tensor, coordinates):
     return flat
 
 
-def reset_parameters(model, informative_params):
-    """Return an independent state dict with the selected coordinates zeroed."""
+def reset_parameters(model, informative_params, reset_reference=None):
+    """Return independent state with selected coordinates reset.
+
+    The default retains the historical zero reset. An explicit model or state
+    dictionary supplies initialization values for selected parameters instead.
+    This avoids dead ReLU channels when a BatchNorm scale and bias are both
+    selected. Unselected values and running-statistic buffers are preserved.
+    """
+    reference_state = None
+    if reset_reference is not None:
+        reference_state = (
+            reset_reference.state_dict()
+            if isinstance(reset_reference, nn.Module)
+            else reset_reference
+        )
+        parameter_names = dict(model.named_parameters())
+        for name in informative_params:
+            if name not in parameter_names:
+                raise ValueError("Reference resets may select only model parameters.")
     reset_state = {}
     for name, tensor in model.state_dict().items():
         new_tensor = tensor.detach().clone(memory_format=torch.contiguous_format)
         if name in informative_params:
             indices = _flat_indices(new_tensor, informative_params[name])
-            new_tensor.reshape(-1).index_fill_(0, indices, 0)
+            if reference_state is None:
+                new_tensor.reshape(-1).index_fill_(0, indices, 0)
+            elif indices.numel():
+                if name not in reference_state or reference_state[name].shape != tensor.shape:
+                    raise ValueError(f"Reset reference must contain shape-compatible parameter {name!r}.")
+                source = reference_state[name].detach().to(
+                    device=tensor.device, dtype=tensor.dtype,
+                )
+                new_tensor.reshape(-1).index_copy_(0, indices, source.reshape(-1)[indices])
         reset_state[name] = new_tensor
     return reset_state
 
@@ -48,7 +73,7 @@ class UnlearnNet(nn.Module):
     creation and sparse-to-dense backward operations on every training batch.
     """
 
-    def __init__(self, base_model, informative_params):
+    def __init__(self, base_model, informative_params, reset_reference=None):
         super().__init__()
         # The template must not register a second, fully trainable parameter set.
         self.inner_model = {"model": copy.deepcopy(base_model)}
@@ -56,7 +81,8 @@ class UnlearnNet(nn.Module):
         self._base_names = {}
         self._selected_names = {}
         used_keys = set()
-        for param_name, tensor in reset_parameters(base_model, informative_params).items():
+        reset_state = reset_parameters(base_model, informative_params, reset_reference)
+        for param_name, tensor in reset_state.items():
             key = param_name.replace(".", "_")
             while key in used_keys:
                 key += "_"
@@ -74,7 +100,9 @@ class UnlearnNet(nn.Module):
             key = self._base_names[param_name]
             self._selected_names[param_name] = key
             self.register_buffer(f"indices_{key}", indices)
-            retrain_params[key] = nn.Parameter(param.new_zeros(indices.numel()))
+            retrain_params[key] = nn.Parameter(
+                reset_state[param_name].reshape(-1)[indices].clone()
+            )
         self.retrain_params = nn.ParameterDict(retrain_params)
         self.train(base_model.training)
 

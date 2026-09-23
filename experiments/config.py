@@ -48,6 +48,7 @@ class TestParamsDict(TypedDict):
     unlearning_method: Literal["information", "parameters"]
     unlearning_percentage: float
     retrain_epochs: int
+    reset_strategy: NotRequired[Literal["zero", "initial"]]
     tests: list[str]
     mia_classifier_types: list[Literal["nn", "logistic", "svm"]]
     whitelist: list[str]
