@@ -1,7 +1,7 @@
-Local validation, 2026-09-23
+Local validation, 2026-09-24
 
 Command: .venv/bin/python -m unittest discover -s tests -v
-Ran 45 tests; 44 passed, 1 CUDA-only check skipped.
+Ran 47 tests; 46 passed, 1 CUDA-only check skipped.
 No failing tests.
 
 Command: .venv/bin/python -m experiments.cifar_recovery_ablation --help
@@ -18,4 +18,5 @@ Saved CIFAR artifact audit rerun passed:
 - LiRA negatives excluded from original training
 - 45500 original training / 40500 retained training / 5000 forget / 4500 retained holdout
 
-No actual CIFAR recovery or sampling ablation was run: original checkpoints and images are absent locally.
+The fresh bootstrap and ablation handoff passed an end-to-end synthetic-data test without any prior suite or checkpoint. The queue dry run dispatched one fresh original/gold bootstrap followed by three matched ablation commands.
+No actual CIFAR recovery or sampling ablation was run: the CIFAR images are absent locally.

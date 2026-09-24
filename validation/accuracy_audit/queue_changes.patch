@@ -1,0 +1,707 @@
+diff --git a/queue.sh b/queue.sh
+index 02a8fd0..bc732c9 100644
+--- a/queue.sh
++++ b/queue.sh
+@@ -1,15 +1,25 @@
+ #!/bin/bash
+-# CINECA Leonardo Booster: bounded CIFAR10-random core-score run.
+-# Submit from the repository root (Slurm opens its logs before this script runs):
+-#   mkdir -p job_logs
++# CINECA Leonardo Booster: bounded CIFAR accuracy ablations.
++# Submit from the repository root. With no saved CIFAR artifacts, this job
++# trains one original and one gold model on a fresh, saved split, then reuses
++# the original checkpoint for every ablation. LiRA is deferred in fresh mode.
++#
+ #   sbatch queue.sh
+-# Optional overrides, for example a utility-only run:
+-#   NUM_TESTS=1 LIRA_SHADOW_MODELS=0 sbatch queue
++# If a matching original checkpoint and its saved suite are available, skip setup:
++#   SUITE=/path/to/CIFAR CHECKPOINT=/path/to/original_model.pth sbatch queue.sh
++#
++# Default cases isolate reset values, then recovery duration, at 44.44% score
++# mass. Optional cases isolate BatchNorm mode, larger curvature samples, or
++# more subspace iterations (one factor at a time):
++#   ABLATION_CASES=initial_5_frozen_bn,initial_5_samples2048 sbatch queue.sh
++#
++# Other overrides: PROJECT_DIR=/path/to/repo SUITE=/path/to/CIFAR
++# SOURCE_MODE=auto|saved|fresh
++# REPETITION=0 SCORE_MASS=44.444444
++# OUTPUT_ROOT=/path/to/new/results VENV_PATH=/path/to/venv BUDGET_FRACTION=0.25
+ 
+-
+-# Keep the project account configured for this allocation.
+ #SBATCH --account=CASD_prod
+-#SBATCH --job-name=spectral_cifar10
++#SBATCH --job-name=cifar_ablation
+ #SBATCH --partition=boost_usr_prod
+ #SBATCH --qos=normal
+ #SBATCH --nodes=1
+@@ -17,18 +27,88 @@
+ #SBATCH --cpus-per-task=8
+ #SBATCH --gres=gpu:1
+ #SBATCH --mem=120G
+-#SBATCH --time=24:00:00
+-#SBATCH --output=job_logs/slurm-%x-%j.out
+-#SBATCH --error=job_logs/slurm-%x-%j.err
++#SBATCH --time=01:00:00
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --error=slurm-%x-%j.err
+ 
+ set -euo pipefail
++PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:?Submit this script with sbatch from the repository root}}"
++if [[ ! -d "${PROJECT_DIR}" ]]; then
++    echo "Project directory does not exist: ${PROJECT_DIR}" >&2
++    exit 2
++fi
++cd "${PROJECT_DIR}"
++
++if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
++    echo "This job runs all selected cases sequentially; do not submit it as an array." >&2
++    exit 2
++fi
+ 
+-cd "${SLURM_SUBMIT_DIR:?Submit this script with sbatch}"
++SUITE="${SUITE:-stat_tests/CIFAR}"
++SOURCE_MODE="${SOURCE_MODE:-auto}"
++REPETITION="${REPETITION:-0}"
++SCORE_MASS="${SCORE_MASS:-44.44444444444444}"
++BUDGET_FRACTION="${BUDGET_FRACTION:-0.25}"
++OUTPUT_ROOT="${OUTPUT_ROOT:-${SUITE}/ablations_job_${SLURM_JOB_ID}}"
++ABLATION_CASES="${ABLATION_CASES:-zero_1,initial_1,initial_5}"
++
++if [[ -n "${CHECKPOINT:-}" && ! -f "${CHECKPOINT}" ]]; then
++    echo "CHECKPOINT does not exist: ${CHECKPOINT}" >&2
++    exit 2
++fi
++case "${SOURCE_MODE}" in
++    auto)
++        if [[ -f "${SUITE}/init_params.pkl" ]]; then
++            SOURCE_MODE=saved
++        else
++            SOURCE_MODE=fresh
++        fi
++        ;;
++    saved|fresh) ;;
++    *) echo "SOURCE_MODE must be auto, saved or fresh." >&2; exit 2 ;;
++esac
++if [[ "${SOURCE_MODE}" == saved ]]; then
++    for required in init_params.pkl labels.pkl "test_${REPETITION}/score_diagnostics.pkl" "test_${REPETITION}/stage_timings.pkl" "test_${REPETITION}/initial_eval_train_results.pkl" "test_${REPETITION}/initial_eval_test_results.pkl"; do
++        if [[ ! -f "${SUITE}/${required}" ]]; then
++            echo "Incomplete saved CIFAR suite: ${SUITE}/${required}" >&2
++            echo "Use SOURCE_MODE=fresh to start a self-contained new experiment." >&2
++            exit 2
++        fi
++    done
++elif [[ -n "${CHECKPOINT:-}" ]]; then
++    echo "A checkpoint requires its matching saved suite; set SUITE or use fresh mode without CHECKPOINT." >&2
++    exit 2
++elif [[ "${REPETITION}" != 0 ]]; then
++    echo "Fresh mode creates repetition 0; set REPETITION=0." >&2
++    exit 2
++fi
++if [[ ! "${REPETITION}" =~ ^[0-9]+$ ]]; then
++    echo "REPETITION must be a nonnegative integer." >&2
++    exit 2
++fi
++if [[ -e "${OUTPUT_ROOT}" ]]; then
++    echo "OUTPUT_ROOT already exists: ${OUTPUT_ROOT}. Choose a new directory." >&2
++    exit 2
++fi
++
++IFS=',' read -r -a CASES <<< "${ABLATION_CASES}"
++if (( ${#CASES[@]} == 0 )); then
++    echo "ABLATION_CASES must contain at least one case." >&2
++    exit 2
++fi
++seen_cases=,
++for test_case in "${CASES[@]}"; do
++    case "${test_case}" in
++        zero_1|initial_1|initial_5|initial_5_frozen_bn|initial_5_samples2048|initial_5_iters5) ;;
++        *) echo "Unknown ablation case: ${test_case}" >&2; exit 2 ;;
++    esac
++    if [[ "${seen_cases}" == *",${test_case},"* ]]; then
++        echo "Duplicate ablation case: ${test_case}" >&2
++        exit 2
++    fi
++    seen_cases+="${test_case},"
++done
+ 
+-# Array indices take precedence only when an array was explicitly submitted.
+-export NUM_POWER_ITERS="${SLURM_ARRAY_TASK_ID:-${NUM_POWER_ITERS:-3}}"
+-export NUM_TESTS="${NUM_TESTS:-3}"
+-export LIRA_SHADOW_MODELS="${LIRA_SHADOW_MODELS:-8}"
+ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+ export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+ export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
+@@ -39,84 +119,95 @@ module purge
+ module load profile/deeplrn
+ module load "${CINECA_AI_MODULE:-cineca-ai}"
+ 
+-# cineca-ai/4.1.1 exposes torchvision from a nonstandard source directory.
+-# Record its working import root before switching to the personal venv.
++# cineca-ai exposes torchvision from a nonstandard source directory. Record
++# that path before activating the project's environment, as in the prior job.
+ CINECA_PYTHON="$(command -v python)"
+ CINECA_TORCHVISION_ROOT="$("${CINECA_PYTHON}" - <<'PY'
+ from pathlib import Path
+ import torchvision
+-
+ print(Path(torchvision.__file__).resolve().parent.parent)
+ PY
+ )"
+ 
+-# Override the module at submission time with CINECA_AI_MODULE=cineca-ai/<version>.
+-VENV_PATH="${VENV_PATH:-${SLURM_SUBMIT_DIR}/venv}"
+-PYTHON="${VENV_PATH}/bin/python"
+-if [[ ! -x "${PYTHON}" ]]; then
+-    echo "Python environment not found at ${VENV_PATH}. Create it before submitting." >&2
+-    exit 1
++VENV_PATH="${VENV_PATH:-${PROJECT_DIR}/venv}"
++if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
++    echo "Python environment not found at ${VENV_PATH}." >&2
++    exit 2
+ fi
+-
+-# Activation is required for venvs layered on CINECA's module-provided packages.
+ source "${VENV_PATH}/bin/activate"
+ PYTHON="$(command -v python)"
+ export PYTHONPATH="${CINECA_TORCHVISION_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+ 
+-echo "=== Job information ==="
+-echo "Host: $(hostname)"
+-echo "Job: ${SLURM_JOB_ID}"
+-if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+-    echo "Array: ${SLURM_ARRAY_JOB_ID}, task: ${SLURM_ARRAY_TASK_ID}"
+-fi
+-echo "NUM_POWER_ITERS: ${NUM_POWER_ITERS}"
+-echo "NUM_TESTS: ${NUM_TESTS}"
+-echo "LIRA_SHADOW_MODELS: ${LIRA_SHADOW_MODELS}"
+-echo "CPUs: ${SLURM_CPUS_PER_TASK}"
+-echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-not set}"
+-"${PYTHON}" -V
+-nvidia-smi
+-
+ "${PYTHON}" - <<'PY'
+-import os
+-import sys
+-
+-# Reject invalid budgets before the smoke check or any model training.
+-num_tests = int(os.environ["NUM_TESTS"])
+-power_iters = int(os.environ["NUM_POWER_ITERS"])
+-shadows = int(os.environ["LIRA_SHADOW_MODELS"])
+-if num_tests < 1 or power_iters < 0:
+-    raise SystemExit("NUM_TESTS must be positive and NUM_POWER_ITERS nonnegative.")
+-if shadows != 0 and (shadows < 4 or shadows % 2):
+-    raise SystemExit("LIRA_SHADOW_MODELS must be 0 or an even integer of at least 4.")
+-print("Full model trainings in this suite:", 2 * num_tests + shadows)
+-
+-try:
+-    import torch
+-    import torchvision
+-    import backpack
+-except ModuleNotFoundError as error:
+-    raise SystemExit(
+-        f"Missing Python package {error.name!r} in {sys.executable}. "
+-        f"Install it in the venv before submitting the job."
+-    ) from error
+-
++import torch
++import torchvision
++import backpack
+ assert torch.cuda.is_available(), "PyTorch cannot access the allocated GPU"
+-print("Python executable:", sys.executable)
+ print("PyTorch:", torch.__version__)
+ print("torchvision:", torchvision.__version__)
+ print("GPU:", torch.cuda.get_device_name(0))
+ print("BackPACK import: OK")
+ PY
+ 
+-echo "=== Running spectral GPU smoke test ==="
+-# With set -e, a failed smoke test stops the job before any training.
+-srun "${PYTHON}" -u -m experiments.spectral_smoke \
+-    --device cuda --backend full --image-size 64 \
+-    --batch-size 128 --rank 10 --hmp-chunk-size 1
+-
+-echo "=== Smoke test passed; running CIFAR10-random Spectral experiment ==="
+-srun "${PYTHON}" -u -m experiments.configs.spectral_wip
+-
+-echo "=== Finished ==="
++echo "=== CIFAR recovery ablations ==="
++echo "Job: ${SLURM_JOB_ID}; host: $(hostname); repetition: ${REPETITION}"
++echo "Source mode: ${SOURCE_MODE}; source suite: ${SUITE}; output: ${OUTPUT_ROOT}"
++echo "Cases: ${ABLATION_CASES}; score mass: ${SCORE_MASS}%"
++echo "Per-case deletion budget: ${BUDGET_FRACTION} of saved gold retraining time"
++mkdir -p "${OUTPUT_ROOT}"
++
++if [[ -z "${CHECKPOINT:-}" ]]; then
++    if [[ "${SOURCE_MODE}" == fresh ]]; then
++        echo "=== Training one original and one gold model on a new CIFAR split ==="
++        srun "${PYTHON}" -u -m experiments.cifar_bootstrap \
++            --output "${OUTPUT_ROOT}/bootstrap" \
++            --batch-size 128 --train-epochs 40
++    else
++        echo "=== Training one fresh original model on the saved split ==="
++        srun "${PYTHON}" -u -m experiments.cifar_bootstrap \
++            --source-suite "${SUITE}" \
++            --repetition "${REPETITION}" \
++            --output "${OUTPUT_ROOT}/bootstrap" \
++            --batch-size 128
++    fi
++    CHECKPOINT="${OUTPUT_ROOT}/bootstrap/original_model.pth"
++    SUITE="${OUTPUT_ROOT}/bootstrap/suite"
++fi
++echo "Ablation suite: ${SUITE}; checkpoint: ${CHECKPOINT}"
++
++# Every case uses the same original checkpoint, saved partition, score seed and
++# data order. The Python command checks checkpoint predictions before scoring.
++for test_case in "${CASES[@]}"; do
++    strategy=initial
++    epochs=5
++    batchnorm_mode=train
++    samples=512
++    power_iters=3
++    case "${test_case}" in
++        zero_1) strategy=zero; epochs=1 ;;
++        initial_1) epochs=1 ;;
++        initial_5) ;;
++        initial_5_frozen_bn) batchnorm_mode=frozen ;;
++        initial_5_samples2048) samples=2048 ;;
++        initial_5_iters5) power_iters=5 ;;
++    esac
++
++    echo "=== Running ${test_case} ==="
++    srun "${PYTHON}" -u -m experiments.cifar_recovery_ablation \
++        --suite "${SUITE}" \
++        --repetition "${REPETITION}" \
++        --checkpoint "${CHECKPOINT}" \
++        --output "${OUTPUT_ROOT}/${test_case}" \
++        --reset-strategy "${strategy}" \
++        --batchnorm-mode "${batchnorm_mode}" \
++        --score-mass "${SCORE_MASS}" \
++        --epochs "${epochs}" \
++        --max-samples "${samples}" \
++        --target-max-samples "${samples}" \
++        --power-iters "${power_iters}" \
++        --rank 10 --batch-size 128 \
++        --budget-fraction "${BUDGET_FRACTION}"
++done
++
++echo "=== All requested ablations finished ==="
+ date
+diff --git a/tests/test_recovery_ablation.py b/tests/test_recovery_ablation.py
+index ded6eb3..6c85e86 100644
+--- a/tests/test_recovery_ablation.py
++++ b/tests/test_recovery_ablation.py
+@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, TensorDataset
+ 
+ from experiments.cifar_recovery_ablation import recover
+ from experiments import cifar_recovery_ablation as ablation
++from experiments import cifar_bootstrap
+ from fisherunlearn.unlearning import UnlearnNet
+ 
+ 
+@@ -97,6 +98,102 @@ class RecoveryAblationTests(unittest.TestCase):
+             for key, value in torch.load(checkpoint, weights_only=True).items():
+                 torch.testing.assert_close(value, model.state_dict()[key])
+ 
++    def test_bootstrap_saves_fresh_original_and_reuses_gold(self):
++        class LabeledDataset(TensorDataset):
++            def __init__(self, x, y):
++                super().__init__(x, y)
++                self.targets = y
++
++        x = torch.randn(24, 2)
++        train = LabeledDataset(x, (x[:, 0] > 0).long())
++        test = LabeledDataset(x[:6], (x[:6, 0] > 0).long())
++        make_model = lambda: nn.Linear(2, 2)
++        gold = make_model()
++        gold_train = ablation.evaluate_model(gold, train, torch.device('cpu'), 8)
++        gold_test = ablation.evaluate_model(gold, test, torch.device('cpu'), 8)
++        with tempfile.TemporaryDirectory() as temporary:
++            source = Path(temporary) / 'source'
++            source_iteration = source / 'test_0'
++            source_iteration.mkdir(parents=True)
++            artifacts = [
++                (source / 'init_params.pkl', dict(dataset_name='cifar10', model_name='resnet18',
++                                                  learning_rate=.01, momentum=.9, train_epochs=1)),
++                (source / 'labels.pkl', {'train': train.targets.numpy(), 'test': test.targets.numpy()}),
++                (source_iteration / 'score_diagnostics.pkl', {
++                    'training_indices': list(range(20)), 'target_indices': list(range(4))}),
++                (source_iteration / 'stage_timings.pkl', {'gold_retraining_seconds': 3.0}),
++                (source_iteration / 'initial_eval_train_results.pkl', {
++                    'trained': gold_train, 'shadow_out': gold_train}),
++                (source_iteration / 'initial_eval_test_results.pkl', {
++                    'trained': gold_test, 'shadow_out': gold_test}),
++            ]
++            for path, value in artifacts:
++                with path.open('wb') as stream:
++                    pickle.dump(value, stream)
++            output = Path(temporary) / 'bootstrap'
++            with mock.patch.object(cifar_bootstrap, 'get_datasets', return_value=(train, test)), mock.patch.object(
++                cifar_bootstrap, 'get_model_class', return_value=make_model,
++            ):
++                checkpoint, suite = cifar_bootstrap.bootstrap(source, 0, output, batch_size=8)
++            self.assertTrue(checkpoint.exists())
++            self.assertTrue((output / 'manifest.json').exists())
++            with (suite / 'test_0' / 'stage_timings.pkl').open('rb') as stream:
++                self.assertEqual(pickle.load(stream)['gold_retraining_seconds'], 3.0)
++            with (suite / 'test_0' / 'initial_eval_train_results.pkl').open('rb') as stream:
++                train_results = pickle.load(stream)
++            self.assertEqual(len(train_results['trained']['pred']), len(train))
++            self.assertTrue((train_results['shadow_out']['pred'] == gold_train['pred']).all())
++            with (suite / 'test_0' / 'score_diagnostics.pkl').open('rb') as stream:
++                reduced = pickle.load(stream)
++            self.assertEqual(set(reduced), {'training_indices', 'target_indices'})
++
++    def test_fresh_bootstrap_needs_no_saved_suite_and_feeds_ablation(self):
++        class LabeledDataset(TensorDataset):
++            def __init__(self, x, y):
++                super().__init__(x, y)
++                self.targets = y
++
++        x = torch.randn(40, 2)
++        train = LabeledDataset(x, (x[:, 0] > 0).long())
++        test = LabeledDataset(x[:8], (x[:8, 0] > 0).long())
++        make_model = lambda: nn.Linear(2, 2)
++        with tempfile.TemporaryDirectory() as temporary:
++            output = Path(temporary) / 'bootstrap'
++            with mock.patch.object(cifar_bootstrap, 'get_datasets', return_value=(train, test)), mock.patch.object(
++                cifar_bootstrap, 'get_model_class', return_value=make_model,
++            ):
++                checkpoint, suite = cifar_bootstrap.bootstrap_fresh(
++                    output, seed=7, batch_size=8, train_epochs=1,
++                )
++            self.assertTrue(checkpoint.exists())
++            self.assertTrue((output / 'gold_model.pth').exists())
++            with (suite / 'test_0' / 'score_diagnostics.pkl').open('rb') as stream:
++                split = pickle.load(stream)
++            self.assertEqual(len(split['target_indices']), 4)
++            self.assertEqual(len(split['training_indices']), 37)
++            self.assertTrue(set(split['target_indices']).issubset(split['training_indices']))
++            with (suite / 'test_0' / 'stage_timings.pkl').open('rb') as stream:
++                timings = pickle.load(stream)
++            self.assertGreater(timings['gold_retraining_seconds'], 0)
++            self.assertFalse((suite / 'lira_shadow_bank.npz').exists())
++
++            # The deletion runner must accept the newly trained checkpoint and
++            # its saved predictions, without importing any prior CIFAR results.
++            timings['gold_retraining_seconds'] = 300.0
++            with (suite / 'test_0' / 'stage_timings.pkl').open('wb') as stream:
++                pickle.dump(timings, stream)
++            result = Path(temporary) / 'ablation'
++            arguments = ['ablation', '--suite', str(suite), '--checkpoint', str(checkpoint),
++                         '--output', str(result), '--epochs', '1', '--rank', '2',
++                         '--max-samples', '8', '--target-max-samples', '4', '--batch-size', '8']
++            with mock.patch('sys.argv', arguments), mock.patch.object(
++                ablation, 'get_datasets', return_value=(train, test),
++            ), mock.patch.object(ablation, 'get_model_class', return_value=make_model):
++                ablation.main()
++            report = json.loads((result / 'report.json').read_text())
++            self.assertEqual(report['status'], 'completed_pending_utility_and_privacy_review')
++            self.assertEqual(set(report['utility']), {'test', 'retained', 'forget'})
++
+ 
+ if __name__ == '__main__':
+     unittest.main()
+diff --git a/validation/accuracy_audit/REPORT.md b/validation/accuracy_audit/REPORT.md
+index abb2a56..de676ba 100644
+--- a/validation/accuracy_audit/REPORT.md
++++ b/validation/accuracy_audit/REPORT.md
+@@ -163,7 +163,13 @@ The full source/test additions and modifications are in [changes.patch](changes.
+ + UnlearnNet(reset_model, selected, reset_reference=fresh_state)
+ ```
+ 
+-The first isolation run needs the original checkpoint for `test_0`. From the repository root on the machine that has it and the CIFAR data:
++The cluster has no original checkpoint or saved CIFAR result suite. The updated `queue.sh` detects this and, from CIFAR data alone, trains **one original and one gold model** on a fresh split. It saves both checkpoints and their predictions in a new suite, then runs the paired ablations against that single original. From the repository root on the cluster:
++
++```bash
++sbatch queue.sh
++```
++
++This is a new experiment, not a replay of the old original weights or data partition. The two setup trainings are recorded separately and are not counted as a deletion; they make the whole research job more expensive than a single retraining. There is no LiRA shadow bank in fresh mode, so the run measures utility and forget-set accuracy but cannot establish privacy. If a saved suite becomes available, the launcher can use it with `SOURCE_MODE=saved`; a checkpoint can only skip setup when `SUITE` points to its matching saved predictions. The full launcher/bootstrap/test diff is in [queue_changes.patch](queue_changes.patch). The direct command for a matching saved checkpoint is:
+ 
+ ```bash
+ python -m experiments.cifar_recovery_ablation \
+@@ -212,4 +218,4 @@ Proposed acceptance screen: test/retained-heldout accuracy within two percentage
+ 
+ The original 37-test suite passed (one CUDA-only test skipped). After the patch, the complete suite additionally verifies initialization recovery and budget behavior; the final test result is recorded in `validation_checks.txt`. The CLI help and diff whitespace checks were exercised. The original CIFAR arrays were only read; existing user edits were preserved.
+ 
+-**Remaining empirical work:** run the paired checkpoint ablation on the original CIFAR weights. Those weights/data are absent from this workspace. The code repair and diagnosis are concrete; restored CIFAR accuracy and the final production setting cannot honestly be claimed until that run passes utility, forgetting and measured-cost checks.
++**Remaining empirical work:** run `sbatch queue.sh` on the cluster with the CIFAR data and project environment. The local workspace has no original checkpoint or image dataset; the queue bootstraps one original and one gold model once. Restored CIFAR accuracy and the final production setting cannot honestly be claimed until that run passes utility, forgetting, measured-cost and privacy checks. The fresh run does not perform the privacy check because it has no LiRA shadow bank.
+diff --git a/validation/accuracy_audit/validation_checks.txt b/validation/accuracy_audit/validation_checks.txt
+index e0b5a97..0ba7971 100644
+--- a/validation/accuracy_audit/validation_checks.txt
++++ b/validation/accuracy_audit/validation_checks.txt
+@@ -1,7 +1,7 @@
+-Local validation, 2026-09-23
++Local validation, 2026-09-24
+ 
+ Command: .venv/bin/python -m unittest discover -s tests -v
+-Ran 45 tests; 44 passed, 1 CUDA-only check skipped.
++Ran 47 tests; 46 passed, 1 CUDA-only check skipped.
+ No failing tests.
+ 
+ Command: .venv/bin/python -m experiments.cifar_recovery_ablation --help
+@@ -18,4 +18,5 @@ Saved CIFAR artifact audit rerun passed:
+ - LiRA negatives excluded from original training
+ - 45500 original training / 40500 retained training / 5000 forget / 4500 retained holdout
+ 
+-No actual CIFAR recovery or sampling ablation was run: original checkpoints and images are absent locally.
++The fresh bootstrap and ablation handoff passed an end-to-end synthetic-data test without any prior suite or checkpoint. The queue dry run dispatched one fresh original/gold bootstrap followed by three matched ablation commands.
++No actual CIFAR recovery or sampling ablation was run: the CIFAR images are absent locally.
+diff --git a/experiments/cifar_bootstrap.py b/experiments/cifar_bootstrap.py
+new file mode 100644
+index 0000000..64acb6d
+--- /dev/null
++++ b/experiments/cifar_bootstrap.py
+@@ -0,0 +1,250 @@
++"""Prepare CIFAR models for checkpoint-only recovery ablations.
++
++Fresh mode trains original and gold models on a new saved split. Saved-suite
++mode trains one original on an existing split and reuses its gold predictions
++and LiRA shadow bank. Neither mode trains shadow models.
++"""
++
++import argparse
++import json
++import pickle
++import shutil
++import time
++from pathlib import Path
++
++import numpy as np
++import torch
++from torch import nn
++from torch.utils.data import Subset
++
++from experiments.datasets import get_datasets
++from experiments.evaluation import evaluate_model
++from experiments.models import get_model_class
++from experiments.training import revised_simple_trainer
++
++
++def read_pickle(path):
++    with path.open('rb') as stream:
++        return pickle.load(stream)
++
++
++def write_pickle(path, value):
++    with path.open('wb') as stream:
++        pickle.dump(value, stream)
++
++
++def bootstrap(source_suite, repetition, output, seed=2026, batch_size=128):
++    """Return paths of a fresh original checkpoint and its matching suite."""
++    overall_start = time.perf_counter()
++    source_suite, output = Path(source_suite), Path(output)
++    if output.exists():
++        raise FileExistsError(f'Bootstrap output already exists: {output}')
++    source_iteration = source_suite / f'test_{repetition}'
++    config = read_pickle(source_suite / 'init_params.pkl')
++    if config['dataset_name'] != 'cifar10' or config['model_name'] != 'resnet18':
++        raise ValueError('Bootstrap expects the saved CIFAR10/ResNet18 suite')
++    saved = read_pickle(source_iteration / 'score_diagnostics.pkl')
++    labels = read_pickle(source_suite / 'labels.pkl')
++    train_ids, target_ids = list(saved['training_indices']), list(saved['target_indices'])
++    train_data, test_data = get_datasets(config)
++    if len(train_ids) != len(set(train_ids)) or len(target_ids) != len(set(target_ids)):
++        raise ValueError('Saved training/target indices must be unique')
++    if not set(target_ids).issubset(train_ids):
++        raise ValueError('Saved target records must be in the original training set')
++    if not np.array_equal(np.asarray(train_data.targets), np.asarray(labels['train'])):
++        raise ValueError('Downloaded CIFAR training labels do not match saved labels')
++    if not np.array_equal(np.asarray(test_data.targets), np.asarray(labels['test'])):
++        raise ValueError('Downloaded CIFAR test labels do not match saved labels')
++
++    validation_ids = sorted(set(range(len(train_data))) - set(train_ids))
++    bank_file = source_suite / 'lira_shadow_bank.npz'
++    if bank_file.exists():
++        with np.load(bank_file) as bank:
++            candidates = set(bank['candidate_complete_indices'].tolist())
++        validation_ids = [i for i in validation_ids if i not in candidates]
++    if not validation_ids:
++        raise ValueError('Saved split has no retained validation records')
++
++    torch.manual_seed(seed)
++    np.random.seed(seed)
++    model_class = get_model_class(config)
++    started = time.perf_counter()
++    trained = revised_simple_trainer(
++        model_class(), nn.CrossEntropyLoss(),
++        [Subset(train_data, train_ids)], [Subset(train_data, validation_ids)],
++        config['train_epochs'], config, train_batch_size=batch_size,
++        eval_batch_size=batch_size,
++    )
++    training_seconds = time.perf_counter() - started
++    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
++    new_train = evaluate_model(trained, train_data, device, batch_size)
++    new_test = evaluate_model(trained, test_data, device, batch_size)
++    previous_train = read_pickle(source_iteration / 'initial_eval_train_results.pkl')
++    previous_test = read_pickle(source_iteration / 'initial_eval_test_results.pkl')
++    stage = read_pickle(source_iteration / 'stage_timings.pkl')
++    if len(previous_train['shadow_out']['pred']) != len(train_data):
++        raise ValueError('Saved gold training predictions do not match CIFAR train size')
++    if len(previous_test['shadow_out']['pred']) != len(test_data):
++        raise ValueError('Saved gold test predictions do not match CIFAR test size')
++
++    iteration = output / 'suite' / f'test_{repetition}'
++    iteration.mkdir(parents=True, exist_ok=False)
++    suite = iteration.parent
++    checkpoint = output / 'original_model.pth'
++    torch.save(trained.state_dict(), checkpoint)
++    write_pickle(suite / 'init_params.pkl', config)
++    shutil.copy2(source_suite / 'labels.pkl', suite / 'labels.pkl')
++    if bank_file.exists():
++        shutil.copy2(bank_file, suite / 'lira_shadow_bank.npz')
++    # The ablation reads these indices; old eigenvalues/scores are intentionally
++    # omitted because they were computed for a different original model.
++    write_pickle(iteration / 'score_diagnostics.pkl', {
++        'training_indices': train_ids, 'target_indices': target_ids,
++    })
++    write_pickle(iteration / 'stage_timings.pkl', {
++        'gold_retraining_seconds': stage['gold_retraining_seconds'],
++        'bootstrap_original_training_seconds': training_seconds,
++    })
++    write_pickle(iteration / 'initial_eval_train_results.pkl', {
++        'trained': new_train, 'shadow_out': previous_train['shadow_out'],
++    })
++    write_pickle(iteration / 'initial_eval_test_results.pkl', {
++        'trained': new_test, 'shadow_out': previous_test['shadow_out'],
++    })
++    manifest = {
++        'source_suite': str(source_suite), 'repetition': repetition,
++        'seed': seed, 'batch_size': batch_size,
++        'checkpoint': str(checkpoint), 'suite': str(suite),
++        'original_training_seconds': training_seconds,
++        'total_bootstrap_seconds': time.perf_counter() - overall_start,
++        'gold_retraining_seconds_from_previous_run': stage['gold_retraining_seconds'],
++        'note': 'Fresh original model on saved split; previous gold predictions and LiRA bank reused. This is a new experiment, not a reproduction of the old original weights.',
++    }
++    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
++    return checkpoint, suite
++
++
++def bootstrap_fresh(output, seed=2026, batch_size=128, train_epochs=40):
++    """Build a complete utility-comparison suite when no saved artifacts exist."""
++    output = Path(output)
++    if output.exists():
++        raise FileExistsError(f'Bootstrap output already exists: {output}')
++    overall_start = time.perf_counter()
++    config = {
++        'test_name': 'CIFAR_random_fresh', 'dataset_name': 'cifar10',
++        'model_name': 'resnet18', 'num_classes': 10, 'num_clients': 10,
++        'distribution_type': 'random', 'target_client': 0,
++        'loss_name': 'cross_entropy', 'trainer_name': 'sgd',
++        'learning_rate': 0.01, 'momentum': 0.9,
++        'train_epochs': train_epochs, 'spectral_rank': 10,
++        'spectral_num_power_iters': 3, 'spectral_max_samples': 512,
++        'spectral_target_max_samples': 512, 'spectral_seed': 0,
++        'spectral_eigenvalue_min': 1e-6, 'spectral_eigenvalue_rtol': 1e-5,
++        'num_tests': 1, 'lira_enabled': False,
++    }
++    train_data, test_data = get_datasets(config)
++    if len(train_data) < 20:
++        raise ValueError('CIFAR bootstrap needs enough records for target, training and validation')
++    order = torch.randperm(len(train_data), generator=torch.Generator().manual_seed(seed)).tolist()
++    target_size = len(order) // 10
++    target_ids = order[:target_size]
++    retained = order[target_size:]
++    heldout_size = len(retained) // 10
++    heldout_ids = retained[:heldout_size]
++    retained_train = retained[heldout_size:]
++    train_ids = retained_train + target_ids
++    validation = [Subset(train_data, heldout_ids)]
++    model_class = get_model_class(config)
++
++    torch.manual_seed(seed + 1)
++    original_start = time.perf_counter()
++    original = revised_simple_trainer(
++        model_class(), nn.CrossEntropyLoss(), [Subset(train_data, train_ids)],
++        validation, train_epochs, config, train_batch_size=batch_size,
++        eval_batch_size=batch_size,
++    )
++    original_seconds = time.perf_counter() - original_start
++
++    torch.manual_seed(seed + 2)
++    gold_start = time.perf_counter()
++    gold = revised_simple_trainer(
++        model_class(), nn.CrossEntropyLoss(), [Subset(train_data, retained_train)],
++        validation, train_epochs, config, train_batch_size=batch_size,
++        eval_batch_size=batch_size,
++    )
++    gold_seconds = time.perf_counter() - gold_start
++
++    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
++    initial_train = {
++        'trained': evaluate_model(original, train_data, device, batch_size),
++        'shadow_out': evaluate_model(gold, train_data, device, batch_size),
++    }
++    initial_test = {
++        'trained': evaluate_model(original, test_data, device, batch_size),
++        'shadow_out': evaluate_model(gold, test_data, device, batch_size),
++    }
++    iteration = output / 'suite' / 'test_0'
++    iteration.mkdir(parents=True, exist_ok=False)
++    suite = iteration.parent
++    checkpoint = output / 'original_model.pth'
++    gold_checkpoint = output / 'gold_model.pth'
++    torch.save(original.state_dict(), checkpoint)
++    torch.save(gold.state_dict(), gold_checkpoint)
++    write_pickle(suite / 'init_params.pkl', config)
++    write_pickle(suite / 'labels.pkl', {
++        'train': np.asarray(train_data.targets),
++        'test': np.asarray(test_data.targets),
++    })
++    write_pickle(iteration / 'score_diagnostics.pkl', {
++        'training_indices': train_ids, 'target_indices': target_ids,
++    })
++    write_pickle(iteration / 'stage_timings.pkl', {
++        'initial_training_seconds': original_seconds,
++        'gold_retraining_seconds': gold_seconds,
++    })
++    write_pickle(iteration / 'initial_eval_train_results.pkl', initial_train)
++    write_pickle(iteration / 'initial_eval_test_results.pkl', initial_test)
++    manifest = {
++        'mode': 'fresh', 'seed': seed, 'batch_size': batch_size,
++        'checkpoint': str(checkpoint), 'gold_checkpoint': str(gold_checkpoint),
++        'suite': str(suite),
++        'train_records': len(train_ids), 'retained_train_records': len(retained_train),
++        'target_records': len(target_ids), 'heldout_records': len(heldout_ids),
++        'original_training_seconds': original_seconds,
++        'gold_retraining_seconds': gold_seconds,
++        'total_bootstrap_seconds': time.perf_counter() - overall_start,
++        'privacy_status': 'No LiRA shadow bank; audit forgetting and MIA separately after selecting a utility-feasible candidate.',
++    }
++    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
++    return checkpoint, suite
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--source-suite', type=Path,
++                        help='Existing suite; omit when starting from CIFAR data alone')
++    parser.add_argument('--repetition', type=int, default=0)
++    parser.add_argument('--output', type=Path, required=True)
++    parser.add_argument('--seed', type=int, default=2026)
++    parser.add_argument('--batch-size', type=int, default=128)
++    parser.add_argument('--train-epochs', type=int, default=40)
++    args = parser.parse_args()
++    if args.repetition < 0 or args.batch_size < 1 or args.train_epochs < 1:
++        parser.error('Repetition must be nonnegative; batch size and epochs positive')
++    if args.source_suite is None:
++        if args.repetition != 0:
++            parser.error('Fresh mode creates repetition 0; omit --repetition')
++        checkpoint, suite = bootstrap_fresh(
++            args.output, seed=args.seed, batch_size=args.batch_size,
++            train_epochs=args.train_epochs,
++        )
++    else:
++        checkpoint, suite = bootstrap(
++            args.source_suite, args.repetition, args.output,
++            seed=args.seed, batch_size=args.batch_size,
++        )
++    print(f'Original checkpoint: {checkpoint}\nMatching suite: {suite}', flush=True)
++
++
++if __name__ == '__main__':
++    main()

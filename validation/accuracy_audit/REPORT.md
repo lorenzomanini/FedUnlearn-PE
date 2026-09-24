@@ -163,7 +163,13 @@ The full source/test additions and modifications are in [changes.patch](changes.
 + UnlearnNet(reset_model, selected, reset_reference=fresh_state)
 ```
 
-The first isolation run needs the original checkpoint for `test_0`. From the repository root on the machine that has it and the CIFAR data:
+The cluster has no original checkpoint or saved CIFAR result suite. The updated `queue.sh` detects this and, from CIFAR data alone, trains **one original and one gold model** on a fresh split. It saves both checkpoints and their predictions in a new suite, then runs the paired ablations against that single original. From the repository root on the cluster:
+
+```bash
+sbatch queue.sh
+```
+
+This is a new experiment, not a replay of the old original weights or data partition. The two setup trainings are recorded separately and are not counted as a deletion; they make the whole research job more expensive than a single retraining. There is no LiRA shadow bank in fresh mode, so the run measures utility and forget-set accuracy but cannot establish privacy. If a saved suite becomes available, the launcher can use it with `SOURCE_MODE=saved`; a checkpoint can only skip setup when `SUITE` points to its matching saved predictions. The full launcher/bootstrap/test diff is in [queue_changes.patch](queue_changes.patch). The direct command for a matching saved checkpoint is:
 
 ```bash
 python -m experiments.cifar_recovery_ablation \
@@ -212,4 +218,4 @@ Proposed acceptance screen: test/retained-heldout accuracy within two percentage
 
 The original 37-test suite passed (one CUDA-only test skipped). After the patch, the complete suite additionally verifies initialization recovery and budget behavior; the final test result is recorded in `validation_checks.txt`. The CLI help and diff whitespace checks were exercised. The original CIFAR arrays were only read; existing user edits were preserved.
 
-**Remaining empirical work:** run the paired checkpoint ablation on the original CIFAR weights. Those weights/data are absent from this workspace. The code repair and diagnosis are concrete; restored CIFAR accuracy and the final production setting cannot honestly be claimed until that run passes utility, forgetting and measured-cost checks.
+**Remaining empirical work:** run `sbatch queue.sh` on the cluster with the CIFAR data and project environment. The local workspace has no original checkpoint or image dataset; the queue bootstraps one original and one gold model once. Restored CIFAR accuracy and the final production setting cannot honestly be claimed until that run passes utility, forgetting, measured-cost and privacy checks. The fresh run does not perform the privacy check because it has no LiRA shadow bank.
