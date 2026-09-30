@@ -31,6 +31,8 @@ class RevisedInitParamsDict(LegacyInitParamsDict):
     num_shadow_models: NotRequired[int]
     lira_seed: NotRequired[int]
     lira_global_variance: NotRequired[bool]
+    repetition_seed: NotRequired[int]
+    save_models: NotRequired[bool]
     spectral_rank: NotRequired[int]
     spectral_num_power_iters: NotRequired[int]
     spectral_max_samples: NotRequired[int | None]

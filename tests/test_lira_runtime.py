@@ -12,7 +12,7 @@ from torch import nn
 from torch.utils.data import Subset, TensorDataset
 
 from experiments import persistence, runner
-from experiments.configs import revised_diagonal, spectral_wip
+from experiments.configs import cifar_full_validation, revised_diagonal, spectral_wip
 
 
 class LiRARuntimeTests(unittest.TestCase):
@@ -136,6 +136,57 @@ class LiRARuntimeTests(unittest.TestCase):
                 self.assertEqual(audited, [0, len(cases) // 2, len(cases) - 1])
                 self.assertTrue(all("test_accuracy" in case["tests"] for case in cases))
                 self.assertEqual(original["tests"], ["test_accuracy", "LiRA"])
+
+    def test_full_cifar_profile_audits_every_mass_across_three_runs(self):
+        config = cifar_full_validation.build_config()
+        cases = cifar_full_validation.build_cases()
+        self.assertEqual(config['num_tests'], 3)
+        self.assertEqual(config['repetition_seed'], 3000)
+        self.assertTrue(config['save_models'])
+        self.assertEqual(config['num_shadow_models'], 16)
+        self.assertEqual(config['train_epochs'], 40)
+        self.assertEqual(len(cases), 10)
+        self.assertEqual([case['unlearning_percentage'] for case in cases][::9], [0.0, 100.0])
+        self.assertTrue(all(case['tests'] == ['LiRA'] for case in cases))
+        self.assertTrue(all(case['reset_strategy'] == 'initial' and case['retrain_epochs'] == 5 for case in cases))
+
+    def test_save_models_persists_original_gold_and_recovered_case(self):
+        values = {'trained': {'pred': np.array([0]), 'loss': np.array([1.0])}}
+        seen_seeds = []
+
+        class FakeTest:
+            def __init__(self, *args):
+                seen_seeds.append(torch.initial_seed())
+                self.trained_model = nn.Linear(2, 2)
+                self.gold_retrain_model = nn.Linear(2, 2)
+                self.init_eval_test_results = values
+                self.init_eval_train_results = values
+
+            def run_test(self, case):
+                self.last_retrained_model = nn.Linear(2, 2)
+                return values, values, {'reset_params_percentage': 1.0,
+                                        'unlearning_with_score_seconds': 2.0}
+
+        with tempfile.TemporaryDirectory() as directory:
+            args = {
+                'test_path': directory, 'train_dataset': self.dataset,
+                'test_dataset': self.test_dataset, 'clients_subsets': self.clients,
+                'model_class': lambda: nn.Linear(2, 2), 'loss_class': nn.CrossEntropyLoss,
+                'trainer_function': None,
+                'init_params_dict': dict(self.params, repetition_seed=3000),
+                'test_params_dicts': [{'unlearning_percentage': 10}],
+                'poisoned_backdoor_dataset': None, 'clean_backdoor_dataset': None,
+                'save_models': True, 'lira_context': None,
+            }
+            errors = runner._run_tests_iter(0, args, FakeTest, torch.device('cpu'))
+            self.assertEqual(errors, [])
+            errors = runner._run_tests_iter(1, args, FakeTest, torch.device('cpu'))
+            self.assertEqual(errors, [])
+            self.assertEqual(seen_seeds, [3000, 3001])
+            output = Path(directory) / 'test_0'
+            for name in ('original_model.pth', 'gold_model.pth', 'recovered_case_0.pth'):
+                self.assertTrue((output / name).is_file())
+                self.assertEqual(set(torch.load(output / name, weights_only=True)), {'weight', 'bias'})
 
     def test_zero_reset_reuses_scores_and_unaudited_cases_skip_inference(self):
         instance = runner._RevisedTest.__new__(runner._RevisedTest)

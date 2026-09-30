@@ -21,3 +21,5 @@ tests/__pycache__/
 **/__pycache__/
 .pytest_cache/
 tests/*
+!tests/test_full_cifar_summary.py
+!tests/test_cifar_preferential_paper.py

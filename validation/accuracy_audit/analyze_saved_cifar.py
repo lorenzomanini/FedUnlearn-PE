@@ -6,6 +6,7 @@ The input pickles are the experiment's own trusted local artifacts.
 """
 
 import csv
+import argparse
 import json
 import pickle
 from pathlib import Path
@@ -52,20 +53,26 @@ def summarize(rows, group_fields):
     return output
 
 
-def save_csv(name, rows):
-    with (OUTPUT / name).open("w", newline="") as stream:
+def save_csv(output, name, rows):
+    with (output / name).open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
 
 
 def main():
-    labels = {name: np.asarray(value) for name, value in read_pickle(INPUT / "labels.pkl").items()}
-    clients = read_pickle(INPUT / "clients_indices.pkl")
-    configuration = read_pickle(INPUT / "init_params.pkl")
-    cases = read_pickle(INPUT / "test_params.pkl")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--input', type=Path, default=INPUT)
+    parser.add_argument('--output', type=Path, default=OUTPUT)
+    args = parser.parse_args()
+    source, output = args.input, args.output
+    output.mkdir(parents=True, exist_ok=True)
+    labels = {name: np.asarray(value) for name, value in read_pickle(source / "labels.pkl").items()}
+    clients = read_pickle(source / "clients_indices.pkl")
+    configuration = read_pickle(source / "init_params.pkl")
+    cases = read_pickle(source / "test_params.pkl")
     target = np.asarray(clients[configuration["target_client"]])
-    bank = dict(np.load(INPUT / "lira_shadow_bank.npz"))
+    bank = dict(np.load(source / "lira_shadow_bank.npz"))
     membership = bank["candidate_membership"]
     candidates = bank["candidate_complete_indices"]
     scores = bank["scores"].astype(np.float64)
@@ -75,31 +82,66 @@ def main():
     assert set(candidates[membership]) == set(target)
     mean_in, std_in = fit_gaussian(scores, shadow_membership)
     mean_out, std_out = fit_gaussian(scores, ~shadow_membership)
+    preferential = configuration.get("distribution_type") == "preferential_class"
+    target_classes = np.unique(labels["train"][target]) if preferential else []
+    other_classes = np.setdiff1d(np.unique(labels["test"]), target_classes) if preferential else []
+    class_labels = np.concatenate((target_classes, other_classes)) if preferential else []
+    candidate_labels = np.concatenate((labels["train"], labels["test"]))[candidates] if preferential else None
 
-    def privacy_metrics(values):
+    def privacy_metrics(values, selected=None):
         values = np.asarray(values, dtype=np.float64)
         assert values.shape == membership.shape and np.isfinite(values).all()
         llr = -np.log(std_in) - 0.5 * ((values - mean_in) / std_in) ** 2
         llr += np.log(std_out) + 0.5 * ((values - mean_out) / std_out) ** 2
-        fpr, tpr, _ = roc_curve(membership, llr)
+        audit_membership = membership if selected is None else membership[selected]
+        audit_scores = llr if selected is None else llr[selected]
+        fpr, tpr, _ = roc_curve(audit_membership, audit_scores)
         return {
-            "auc": float(roc_auc_score(membership, llr)),
+            "auc": float(roc_auc_score(audit_membership, audit_scores)),
             "tpr_at_fpr_0_001": float(tpr[fpr <= 0.001].max()),
             "tpr_at_fpr_0_01": float(tpr[fpr <= 0.01].max()),
         }
 
     utility_rows, privacy_rows, timing_rows, diagnostic_rows = [], [], [], []
+    per_class_rows = []
+
+    def record_per_class(base, test, train, lira_values):
+        for class_label in class_labels:
+            target_indices = target[labels["train"][target] == class_label]
+            test_mask = labels["test"] == class_label
+            candidate_mask = candidate_labels == class_label
+            if not np.any(test_mask) or (len(target_indices) and not np.any(~membership & candidate_mask)):
+                raise ValueError(f"Class {class_label} needs test and LiRA nonmember examples")
+            row = {
+                **base,
+                "class_label": int(class_label),
+                "target_count": len(target_indices),
+                "nonmember_count": int(np.count_nonzero(~membership & candidate_mask)),
+                "forget_accuracy_pct": float(np.mean(train["pred"][target_indices] == class_label) * 100)
+                                       if len(target_indices) else None,
+                "test_accuracy_pct": float(np.mean(test["pred"][test_mask] == class_label) * 100),
+            }
+            metrics = privacy_metrics(lira_values, candidate_mask) if lira_values is not None and len(target_indices) else {}
+            row.update({"lira_" + name: metrics.get(name) for name in
+                        ("auc", "tpr_at_fpr_0_001", "tpr_at_fpr_0_01")})
+            per_class_rows.append(row)
+
     for repetition in range(configuration["num_tests"]):
-        directory = INPUT / f"test_{repetition}"
+        directory = source / f"test_{repetition}"
         diagnostics = read_pickle(directory / "score_diagnostics.pkl")
         training = np.asarray(diagnostics["training_indices"])
         retained = np.setdiff1d(training, target)
         heldout = np.setdiff1d(np.arange(len(labels["train"])), training)
-        assert len(training) == len(np.unique(training)) == 45500
-        assert len(retained) == 40500 and len(target) == 5000 and len(heldout) == 4500
+        assert len(training) == len(np.unique(training))
+        assert len(retained) > 0 and len(target) > 0 and len(heldout) > 0
         assert set(target).issubset(set(training))
         assert not set(candidates[~membership]).intersection(training)
         extra = read_pickle(directory / "extra_results.pkl")
+        if configuration.get('save_models'):
+            assert (directory / 'original_model.pth').is_file()
+            assert (directory / 'gold_model.pth').is_file()
+            assert all((directory / f'recovered_case_{i}.pth').is_file()
+                       for i in range(len(cases)))
         stage = read_pickle(directory / "stage_timings.pkl")
         initial_test = read_pickle(directory / "initial_eval_test_results.pkl")
         initial_train = read_pickle(directory / "initial_eval_train_results.pkl")
@@ -109,7 +151,7 @@ def main():
         eval_lira = dict(np.load(directory / "eval_lira_results.npz"))
         lira_cases = read_pickle(directory / "lira_case_indices.pkl")
         assert extra["case_index"] == list(range(len(cases)))
-        assert lira_cases == [0, 5, 9]
+        assert lira_cases == [i for i, case in enumerate(cases) if "LiRA" in case.get("tests", [])]
         assert all(array.shape[0] == len(cases) for array in eval_test.values())
         assert all(array.shape[0] == len(cases) for array in eval_train.values())
         assert all(array.shape[0] == len(lira_cases) for array in eval_lira.values())
@@ -134,6 +176,7 @@ def main():
             base = {"repetition": repetition, "case_index": -1, "model": model, "score_mass_pct": 0.0, "parameters_reset_pct": 0.0}
             utility_rows.append({**base, **utility_metrics(initial_test[name], initial_train[name])})
             privacy_rows.append({**base, **privacy_metrics(initial_lira[name])})
+            record_per_class(base, initial_test[name], initial_train[name], initial_lira[name])
 
         for case_index, case in enumerate(cases):
             base = {"repetition": repetition, "case_index": case_index, "score_mass_pct": case["unlearning_percentage"], "parameters_reset_pct": extra["reset_params_percentage"][case_index]}
@@ -141,8 +184,10 @@ def main():
                 test = {field: eval_test[name + "__" + field][case_index] for field in ("pred", "loss")}
                 train = {field: eval_train[name + "__" + field][case_index] for field in ("pred", "loss")}
                 utility_rows.append({**base, "model": name, **utility_metrics(test, train)})
-                if case_index in lira_cases:
-                    privacy_rows.append({**base, "model": name, **privacy_metrics(eval_lira[name][lira_cases.index(case_index)])})
+                lira_values = eval_lira[name][lira_cases.index(case_index)] if case_index in lira_cases else None
+                if lira_values is not None:
+                    privacy_rows.append({**base, "model": name, **privacy_metrics(lira_values)})
+                record_per_class({**base, "model": name}, test, train, lira_values)
                 if case_index == 0:
                     assert np.array_equal(test["pred"], initial_test["trained"]["pred"])
                     assert np.array_equal(train["pred"], initial_train["trained"]["pred"])
@@ -151,6 +196,7 @@ def main():
                 "score_seconds": stage["score_seconds"],
                 "selection_seconds": extra["selection_seconds"][case_index],
                 "recovery_seconds": extra["recovery_seconds"][case_index],
+                "model_export_seconds": extra.get("model_export_seconds", [0.0] * len(cases))[case_index],
                 "unlearning_with_score_seconds": extra["unlearning_with_score_seconds"][case_index],
                 "gold_retraining_seconds": stage["gold_retraining_seconds"],
                 "cost_fraction_of_gold": extra["unlearning_with_score_seconds"][case_index] / stage["gold_retraining_seconds"],
@@ -174,23 +220,42 @@ def main():
         })
 
     for name, rows in [("utility", utility_rows), ("privacy", privacy_rows), ("timings", timing_rows)]:
-        save_csv("cifar_" + name + "_per_run.csv", rows)
+        save_csv(output, "cifar_" + name + "_per_run.csv", rows)
         groups = ["case_index", "model"] if name != "timings" else ["case_index"]
-        save_csv("cifar_" + name + "_summary.csv", summarize(rows, groups))
-    save_csv("cifar_score_diagnostics.csv", diagnostic_rows)
+        save_csv(output, "cifar_" + name + "_summary.csv", summarize(rows, groups))
+    if preferential:
+        save_csv(output, "cifar_per_class_per_run.csv", per_class_rows)
+        save_csv(output, "cifar_per_class_summary.csv",
+                 summarize(per_class_rows, ["case_index", "model", "class_label"]))
+    save_csv(output, "cifar_score_diagnostics.csv", diagnostic_rows)
+    efficiency_pass = all(
+        np.isfinite(row['cost_fraction_of_gold']) and
+        0 <= row['cost_fraction_of_gold'] < 1
+        for row in timing_rows
+    )
     metadata = {
-        "input": str(INPUT),
-        "checks_passed": ["no missing sweep cases", "same LiRA cases [0,5,9] in each repetition", "finite stored outputs", "zero-reset predictions equal original", "LiRA positives are all and only target records", "LiRA negatives excluded from original training", "45500 original training / 40500 retained training / 5000 forget / 4500 retained holdout"],
+        "input": str(source),
+        "lira_case_indices": [i for i, case in enumerate(cases) if "LiRA" in case.get("tests", [])],
+        "efficiency_pass": efficiency_pass,
+        "checks_passed": ["no missing sweep cases", "LiRA cases match the configuration in each repetition", "finite stored outputs", "zero-reset predictions equal original", "LiRA positives are all and only target records", "LiRA negatives excluded from original training", "training, retained, target and heldout partitions are nonempty and disjoint where required"],
+        "checkpoints_saved": bool(configuration.get('save_models')),
+        "split_sizes": {
+            "original_training": int(len(training)),
+            "retained_training": int(len(retained)),
+            "target": int(len(target)),
+            "retained_heldout": int(len(heldout)),
+        },
         "notes": [
             "All *_pct values are percentages; AUC/TPR use fractions.",
-            "Standard deviations use population convention (ddof=0) over three repetitions.",
-            "retrained means one epoch recovering only reset coordinates; gold means 40 epochs from fresh initialization.",
+            "Standard deviations use population convention (ddof=0) over the configured repetitions.",
+            "retrained means recovery of only reset coordinates for the case's configured epochs; gold means full training from fresh initialization.",
             "Artifact field loss is true-class logit margin, not cross-entropy; CE cannot be reconstructed from it.",
             "Prediction disagreement from gold is a behavioral proxy, not parameter or probability distance.",
-            "No model checkpoints/full logits saved; cannot measure parameter distance or rerun curvature/recovery on the identical trained model.",
-            "Single-deletion cost includes score construction, parameter selection, reset/recovery; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
-            "LiRA uses 8 shadows, 4 IN and 4 OUT per record, a shared fitted bank, and a globally pooled IN variance and OUT variance.",
-            "Retained heldout predictions cover all 4500 original-training exclusions, including LiRA candidate nonmembers removed from validation.",
+            "Model checkpoints are present only when the suite was run with save_models=True; logit margins are not full logits.",
+            "Single-deletion cost includes score construction, parameter selection, reset/recovery and saved checkpoint export when enabled; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
+            f"LiRA uses {len(scores)} shared shadows with balanced IN/OUT membership per record and globally pooled IN/OUT variances.",
+            "Retained heldout predictions cover all original-training exclusions, including LiRA candidate nonmembers removed from validation.",
+            "Preferential-client runs report test accuracy by class, plus forget accuracy and LiRA AUC/TPR where the target client has records of that class.",
         ],
         "lira_candidate_members": int(membership.sum()),
         "lira_candidate_nonmembers": int((~membership).sum()),
@@ -199,10 +264,12 @@ def main():
         "lira_shadow_in_counts": np.unique(shadow_membership.sum(axis=0)).tolist(),
         "lira_global_std_in": std_in,
         "lira_global_std_out": std_out,
-        "suite_timings": read_pickle(INPUT / "stage_timings.pkl"),
+        "suite_timings": read_pickle(source / "stage_timings.pkl"),
     }
-    (OUTPUT / "cifar_audit_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    (output / "cifar_audit_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(json.dumps(metadata, indent=2))
+    if not efficiency_pass:
+        raise RuntimeError('At least one deletion cost as much as gold retraining; see timing CSV')
 
 
 if __name__ == "__main__":

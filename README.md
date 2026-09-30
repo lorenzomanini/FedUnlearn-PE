@@ -42,9 +42,8 @@ contains the shadow scores and explicit membership mask, while each `test_<n>`
 directory contains candidate scores only for its audited cases.
 `lira_case_indices.pkl` maps their rows to the saved utility-result rows. Cases
 without LiRA still retain all utility results; the analysis handles these partial
-audits and suites with LiRA disabled. Eight shadows give four IN and four OUT
-observations per record; this is an inexpensive exploratory audit, with less
-statistical precision than a 64-shadow evaluation.
+audits and suites with LiRA disabled. More shadows provide more IN and OUT
+observations per record at a higher training cost.
 
 The result key `shadow_out` is retained for artifact compatibility and denotes
 the gold-standard model retrained without the entire target client. It is not
@@ -52,13 +51,16 @@ used to construct the record-level shadow-OUT distributions. Analyze a suite
 with:
 
 ```bash
-python -m analysis.experiments_results stat_tests/CIFAR
+python -m analysis.experiments_results path/to/suite
 ```
 
-The uploaded `stat_tests/CIFAR` directory is the `CIFAR_random` spectral suite
-with three repetitions. The analysis command reads all three by default and
-plots test accuracy and online LiRA results. The suite directory is optional
-for this dataset; pass another directory to analyze a different run.
+The command reads the configured repetitions and plots test accuracy and online
+LiRA results. To write CSV summaries, run
+`python validation/accuracy_audit/analyze_saved_cifar.py --input path/to/suite --output path/to/summary`.
+For a `preferential_class` suite, `cifar_per_class_{per_run,summary}.csv` also
+reports test accuracy for every class, plus forget accuracy and class-restricted
+LiRA AUC/TPR for classes represented by the target client. This helps identify
+class-distribution effects in pooled privacy scores.
 
 The faithful shadow-bank path currently supports the centralized `sgd` runner.
 The legacy runner now rejects its former single-benchmark approximation when a
@@ -82,7 +84,7 @@ model and reused throughout its percentage sweep. Full-data curvature is still
 available by setting both sample limits to `0` or `None`.
 
 These are explicit empirical-curvature and rank approximations. Compare sample
-size, rank, cutoff and forgetting/utility outcomes before publication. The
+size, rank, cutoff and forgetting/utility outcomes before drawing conclusions. The
 existing diagonal runners remain separate historical variants; their optional
 stochastic correction is not part of the document's core score.
 
@@ -109,7 +111,7 @@ separate selection/recovery from the random baseline and privacy/utility
 inference; `unlearning_with_score_seconds` charges the shared score once to an
 individual deletion. The suite timing file records shadow-bank and total time.
 
-The spectral launch configuration now defaults to **3 repetitions** and performs
+The `spectral_wip` launch configuration defaults to **3 repetitions** and performs
 LiRA at **3 of the 10 sweep points** (0%, 55.56%, 100% score mass). The training
 epochs and shadow training-set sizes are unchanged. Override these budgets:
 
@@ -118,6 +120,14 @@ NUM_TESTS=3 LIRA_SHADOW_MODELS=8 NUM_POWER_ITERS=3 python -m experiments.configs
 # Utility-only development run:
 NUM_TESTS=1 LIRA_SHADOW_MODELS=0 NUM_POWER_ITERS=2 python -m experiments.configs.spectral_wip
 ```
+
+For a CIFAR-10 random-client sweep, submit `sbatch queue.sh` from the repository
+root. The launcher runs a GPU Hessian smoke check, then uses
+`experiments.configs.cifar_full_validation` with three training repetitions and
+40 shared LiRA shadows (20 IN and 20 OUT per record). It audits all ten score
+masses and writes CSV summaries under `stat_tests/CIFAR/random_job_<jobid>/summary`.
+The score uses rank 20 and fixed 2,048-record full and target curvature samples;
+these are sampled approximations. Recovery ablations use `queue_ablation.sh`.
 
 ## Checks before a long run
 
@@ -152,7 +162,7 @@ and runtime validation. If the environment is created somewhere other than
 Within an allocated GPU job, using the same environment as `queue.sh`:
 
 ```bash
-srun venv/bin/python -m experiments.spectral_smoke --device cuda --batch-size 128 --rank 10
+srun venv/bin/python -m experiments.spectral_smoke --device cuda --backend full --image-size 64 --batch-size 128 --rank 20
 ```
 
 This checks one ResNet18 full-Hessian matrix product at the same 64×64 image size

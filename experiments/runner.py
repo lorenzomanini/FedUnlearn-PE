@@ -599,6 +599,7 @@ class _RevisedTest:
                 self.last_lira_results[name] = known_scores[id(model)]
 
         extra_results['lira_evaluation_seconds'] = time.perf_counter() - lira_start
+        self.last_retrained_model = retrained_model
         return eval_test_results, eval_train_results, extra_results
 
 
@@ -660,11 +661,25 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
     logging.info(f"Using device: {device}")
 
     run_init_params = init_params_dict.copy()
+    repetition_seed = run_init_params.get('repetition_seed')
+    if repetition_seed is not None:
+        resolved_seed = int(repetition_seed) + iter
+        np.random.seed(resolved_seed)
+        torch.manual_seed(resolved_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(resolved_seed)
+        run_init_params['resolved_repetition_seed'] = resolved_seed
     lira_context = arg.get("lira_context")
     if lira_context is not None:
         run_init_params["_lira_fixed_train_indices"] = lira_context["fixed_train_indices"]
         run_init_params["_lira_fixed_eval_indices"] = lira_context["fixed_eval_indices"]
     test_instance = test_class(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, run_init_params, poisoned_backdoor_dataset, clean_backdoor_dataset)
+
+    if arg['save_models']:
+        torch.save(test_instance.trained_model.cpu().state_dict(),
+                   os.path.join(test_iter_path, 'original_model.pth'))
+        torch.save(test_instance.gold_retrain_model.cpu().state_dict(),
+                   os.path.join(test_iter_path, 'gold_model.pth'))
 
     if lira_context is not None:
         test_instance.configure_lira(
@@ -694,6 +709,12 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
     for i, test_params_dict in enumerate(tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
         try:
             eval_test_result, eval_train_result, test_extra_result = test_instance.run_test(test_params_dict)
+            if arg['save_models']:
+                export_start = time.perf_counter()
+                torch.save(test_instance.last_retrained_model.cpu().state_dict(),
+                           os.path.join(test_iter_path, f'recovered_case_{i}.pth'))
+                test_extra_result['model_export_seconds'] = time.perf_counter() - export_start
+                test_extra_result['unlearning_with_score_seconds'] += test_extra_result['model_export_seconds']
             test_extra_result['case_index'] = i
             acc_eval_test_results.append(eval_test_result)
             acc_eval_train_results.append(eval_train_result)

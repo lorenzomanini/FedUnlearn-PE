@@ -1,0 +1,576 @@
+diff --git a/.gitignore b/.gitignore
+index a1b1dad..2085a20 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -20,4 +20,5 @@ docs/*
+ tests/__pycache__/
+ **/__pycache__/
+ .pytest_cache/
+-tests/*
+\ No newline at end of file
++tests/*
++!tests/test_full_cifar_summary.py
+diff --git a/experiments/config.py b/experiments/config.py
+index 2e5aa00..cca79b8 100644
+--- a/experiments/config.py
++++ b/experiments/config.py
+@@ -31,6 +31,8 @@ class RevisedInitParamsDict(LegacyInitParamsDict):
+     num_shadow_models: NotRequired[int]
+     lira_seed: NotRequired[int]
+     lira_global_variance: NotRequired[bool]
++    repetition_seed: NotRequired[int]
++    save_models: NotRequired[bool]
+     spectral_rank: NotRequired[int]
+     spectral_num_power_iters: NotRequired[int]
+     spectral_max_samples: NotRequired[int | None]
+diff --git a/experiments/runner.py b/experiments/runner.py
+index 0d24964..309da77 100644
+--- a/experiments/runner.py
++++ b/experiments/runner.py
+@@ -599,6 +599,7 @@ class _RevisedTest:
+                 self.last_lira_results[name] = known_scores[id(model)]
+ 
+         extra_results['lira_evaluation_seconds'] = time.perf_counter() - lira_start
++        self.last_retrained_model = retrained_model
+         return eval_test_results, eval_train_results, extra_results
+ 
+ 
+@@ -660,12 +661,26 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
+     logging.info(f"Using device: {device}")
+ 
+     run_init_params = init_params_dict.copy()
++    repetition_seed = run_init_params.get('repetition_seed')
++    if repetition_seed is not None:
++        resolved_seed = int(repetition_seed) + iter
++        np.random.seed(resolved_seed)
++        torch.manual_seed(resolved_seed)
++        if torch.cuda.is_available():
++            torch.cuda.manual_seed_all(resolved_seed)
++        run_init_params['resolved_repetition_seed'] = resolved_seed
+     lira_context = arg.get("lira_context")
+     if lira_context is not None:
+         run_init_params["_lira_fixed_train_indices"] = lira_context["fixed_train_indices"]
+         run_init_params["_lira_fixed_eval_indices"] = lira_context["fixed_eval_indices"]
+     test_instance = test_class(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, run_init_params, poisoned_backdoor_dataset, clean_backdoor_dataset)
+ 
++    if arg['save_models']:
++        torch.save(test_instance.trained_model.cpu().state_dict(),
++                   os.path.join(test_iter_path, 'original_model.pth'))
++        torch.save(test_instance.gold_retrain_model.cpu().state_dict(),
++                   os.path.join(test_iter_path, 'gold_model.pth'))
++
+     if lira_context is not None:
+         test_instance.configure_lira(
+             lira_context["candidate_dataset"], arg["evaluate_lira_function"]
+@@ -694,6 +709,12 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
+     for i, test_params_dict in enumerate(tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
+         try:
+             eval_test_result, eval_train_result, test_extra_result = test_instance.run_test(test_params_dict)
++            if arg['save_models']:
++                export_start = time.perf_counter()
++                torch.save(test_instance.last_retrained_model.cpu().state_dict(),
++                           os.path.join(test_iter_path, f'recovered_case_{i}.pth'))
++                test_extra_result['model_export_seconds'] = time.perf_counter() - export_start
++                test_extra_result['unlearning_with_score_seconds'] += test_extra_result['model_export_seconds']
+             test_extra_result['case_index'] = i
+             acc_eval_test_results.append(eval_test_result)
+             acc_eval_train_results.append(eval_train_result)
+diff --git a/tests/test_lira_runtime.py b/tests/test_lira_runtime.py
+index 46e806f..7cf6514 100644
+--- a/tests/test_lira_runtime.py
++++ b/tests/test_lira_runtime.py
+@@ -12,7 +12,7 @@ from torch import nn
+ from torch.utils.data import Subset, TensorDataset
+ 
+ from experiments import persistence, runner
+-from experiments.configs import revised_diagonal, spectral_wip
++from experiments.configs import cifar_full_validation, revised_diagonal, spectral_wip
+ 
+ 
+ class LiRARuntimeTests(unittest.TestCase):
+@@ -137,6 +137,57 @@ class LiRARuntimeTests(unittest.TestCase):
+                 self.assertTrue(all("test_accuracy" in case["tests"] for case in cases))
+                 self.assertEqual(original["tests"], ["test_accuracy", "LiRA"])
+ 
++    def test_full_cifar_profile_audits_every_mass_across_three_runs(self):
++        config = cifar_full_validation.build_config()
++        cases = cifar_full_validation.build_cases()
++        self.assertEqual(config['num_tests'], 3)
++        self.assertEqual(config['repetition_seed'], 3000)
++        self.assertTrue(config['save_models'])
++        self.assertEqual(config['num_shadow_models'], 16)
++        self.assertEqual(config['train_epochs'], 40)
++        self.assertEqual(len(cases), 10)
++        self.assertEqual([case['unlearning_percentage'] for case in cases][::9], [0.0, 100.0])
++        self.assertTrue(all(case['tests'] == ['LiRA'] for case in cases))
++        self.assertTrue(all(case['reset_strategy'] == 'initial' and case['retrain_epochs'] == 5 for case in cases))
++
++    def test_save_models_persists_original_gold_and_recovered_case(self):
++        values = {'trained': {'pred': np.array([0]), 'loss': np.array([1.0])}}
++        seen_seeds = []
++
++        class FakeTest:
++            def __init__(self, *args):
++                seen_seeds.append(torch.initial_seed())
++                self.trained_model = nn.Linear(2, 2)
++                self.gold_retrain_model = nn.Linear(2, 2)
++                self.init_eval_test_results = values
++                self.init_eval_train_results = values
++
++            def run_test(self, case):
++                self.last_retrained_model = nn.Linear(2, 2)
++                return values, values, {'reset_params_percentage': 1.0,
++                                        'unlearning_with_score_seconds': 2.0}
++
++        with tempfile.TemporaryDirectory() as directory:
++            args = {
++                'test_path': directory, 'train_dataset': self.dataset,
++                'test_dataset': self.test_dataset, 'clients_subsets': self.clients,
++                'model_class': lambda: nn.Linear(2, 2), 'loss_class': nn.CrossEntropyLoss,
++                'trainer_function': None,
++                'init_params_dict': dict(self.params, repetition_seed=3000),
++                'test_params_dicts': [{'unlearning_percentage': 10}],
++                'poisoned_backdoor_dataset': None, 'clean_backdoor_dataset': None,
++                'save_models': True, 'lira_context': None,
++            }
++            errors = runner._run_tests_iter(0, args, FakeTest, torch.device('cpu'))
++            self.assertEqual(errors, [])
++            errors = runner._run_tests_iter(1, args, FakeTest, torch.device('cpu'))
++            self.assertEqual(errors, [])
++            self.assertEqual(seen_seeds, [3000, 3001])
++            output = Path(directory) / 'test_0'
++            for name in ('original_model.pth', 'gold_model.pth', 'recovered_case_0.pth'):
++                self.assertTrue((output / name).is_file())
++                self.assertEqual(set(torch.load(output / name, weights_only=True)), {'weight', 'bias'})
++
+     def test_zero_reset_reuses_scores_and_unaudited_cases_skip_inference(self):
+         instance = runner._RevisedTest.__new__(runner._RevisedTest)
+         instance.trained_model = nn.Linear(2, 2)
+diff --git a/validation/accuracy_audit/analyze_saved_cifar.py b/validation/accuracy_audit/analyze_saved_cifar.py
+index 75e72e1..48f6bd6 100644
+--- a/validation/accuracy_audit/analyze_saved_cifar.py
++++ b/validation/accuracy_audit/analyze_saved_cifar.py
+@@ -6,6 +6,7 @@ The input pickles are the experiment's own trusted local artifacts.
+ """
+ 
+ import csv
++import argparse
+ import json
+ import pickle
+ from pathlib import Path
+@@ -52,20 +53,26 @@ def summarize(rows, group_fields):
+     return output
+ 
+ 
+-def save_csv(name, rows):
+-    with (OUTPUT / name).open("w", newline="") as stream:
++def save_csv(output, name, rows):
++    with (output / name).open("w", newline="") as stream:
+         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+         writer.writeheader()
+         writer.writerows(rows)
+ 
+ 
+ def main():
+-    labels = {name: np.asarray(value) for name, value in read_pickle(INPUT / "labels.pkl").items()}
+-    clients = read_pickle(INPUT / "clients_indices.pkl")
+-    configuration = read_pickle(INPUT / "init_params.pkl")
+-    cases = read_pickle(INPUT / "test_params.pkl")
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--input', type=Path, default=INPUT)
++    parser.add_argument('--output', type=Path, default=OUTPUT)
++    args = parser.parse_args()
++    source, output = args.input, args.output
++    output.mkdir(parents=True, exist_ok=True)
++    labels = {name: np.asarray(value) for name, value in read_pickle(source / "labels.pkl").items()}
++    clients = read_pickle(source / "clients_indices.pkl")
++    configuration = read_pickle(source / "init_params.pkl")
++    cases = read_pickle(source / "test_params.pkl")
+     target = np.asarray(clients[configuration["target_client"]])
+-    bank = dict(np.load(INPUT / "lira_shadow_bank.npz"))
++    bank = dict(np.load(source / "lira_shadow_bank.npz"))
+     membership = bank["candidate_membership"]
+     candidates = bank["candidate_complete_indices"]
+     scores = bank["scores"].astype(np.float64)
+@@ -90,16 +97,21 @@ def main():
+ 
+     utility_rows, privacy_rows, timing_rows, diagnostic_rows = [], [], [], []
+     for repetition in range(configuration["num_tests"]):
+-        directory = INPUT / f"test_{repetition}"
++        directory = source / f"test_{repetition}"
+         diagnostics = read_pickle(directory / "score_diagnostics.pkl")
+         training = np.asarray(diagnostics["training_indices"])
+         retained = np.setdiff1d(training, target)
+         heldout = np.setdiff1d(np.arange(len(labels["train"])), training)
+-        assert len(training) == len(np.unique(training)) == 45500
+-        assert len(retained) == 40500 and len(target) == 5000 and len(heldout) == 4500
++        assert len(training) == len(np.unique(training))
++        assert len(retained) > 0 and len(target) > 0 and len(heldout) > 0
+         assert set(target).issubset(set(training))
+         assert not set(candidates[~membership]).intersection(training)
+         extra = read_pickle(directory / "extra_results.pkl")
++        if configuration.get('save_models'):
++            assert (directory / 'original_model.pth').is_file()
++            assert (directory / 'gold_model.pth').is_file()
++            assert all((directory / f'recovered_case_{i}.pth').is_file()
++                       for i in range(len(cases)))
+         stage = read_pickle(directory / "stage_timings.pkl")
+         initial_test = read_pickle(directory / "initial_eval_test_results.pkl")
+         initial_train = read_pickle(directory / "initial_eval_train_results.pkl")
+@@ -109,7 +121,7 @@ def main():
+         eval_lira = dict(np.load(directory / "eval_lira_results.npz"))
+         lira_cases = read_pickle(directory / "lira_case_indices.pkl")
+         assert extra["case_index"] == list(range(len(cases)))
+-        assert lira_cases == [0, 5, 9]
++        assert lira_cases == [i for i, case in enumerate(cases) if "LiRA" in case.get("tests", [])]
+         assert all(array.shape[0] == len(cases) for array in eval_test.values())
+         assert all(array.shape[0] == len(cases) for array in eval_train.values())
+         assert all(array.shape[0] == len(lira_cases) for array in eval_lira.values())
+@@ -151,6 +163,7 @@ def main():
+                 "score_seconds": stage["score_seconds"],
+                 "selection_seconds": extra["selection_seconds"][case_index],
+                 "recovery_seconds": extra["recovery_seconds"][case_index],
++                "model_export_seconds": extra.get("model_export_seconds", [0.0] * len(cases))[case_index],
+                 "unlearning_with_score_seconds": extra["unlearning_with_score_seconds"][case_index],
+                 "gold_retraining_seconds": stage["gold_retraining_seconds"],
+                 "cost_fraction_of_gold": extra["unlearning_with_score_seconds"][case_index] / stage["gold_retraining_seconds"],
+@@ -174,23 +187,37 @@ def main():
+         })
+ 
+     for name, rows in [("utility", utility_rows), ("privacy", privacy_rows), ("timings", timing_rows)]:
+-        save_csv("cifar_" + name + "_per_run.csv", rows)
++        save_csv(output, "cifar_" + name + "_per_run.csv", rows)
+         groups = ["case_index", "model"] if name != "timings" else ["case_index"]
+-        save_csv("cifar_" + name + "_summary.csv", summarize(rows, groups))
+-    save_csv("cifar_score_diagnostics.csv", diagnostic_rows)
++        save_csv(output, "cifar_" + name + "_summary.csv", summarize(rows, groups))
++    save_csv(output, "cifar_score_diagnostics.csv", diagnostic_rows)
++    efficiency_pass = all(
++        np.isfinite(row['cost_fraction_of_gold']) and
++        0 <= row['cost_fraction_of_gold'] < 1
++        for row in timing_rows
++    )
+     metadata = {
+-        "input": str(INPUT),
+-        "checks_passed": ["no missing sweep cases", "same LiRA cases [0,5,9] in each repetition", "finite stored outputs", "zero-reset predictions equal original", "LiRA positives are all and only target records", "LiRA negatives excluded from original training", "45500 original training / 40500 retained training / 5000 forget / 4500 retained holdout"],
++        "input": str(source),
++        "lira_case_indices": [i for i, case in enumerate(cases) if "LiRA" in case.get("tests", [])],
++        "efficiency_pass": efficiency_pass,
++        "checks_passed": ["no missing sweep cases", "LiRA cases match the configuration in each repetition", "finite stored outputs", "zero-reset predictions equal original", "LiRA positives are all and only target records", "LiRA negatives excluded from original training", "training, retained, target and heldout partitions are nonempty and disjoint where required"],
++        "checkpoints_saved": bool(configuration.get('save_models')),
++        "split_sizes": {
++            "original_training": int(len(training)),
++            "retained_training": int(len(retained)),
++            "target": int(len(target)),
++            "retained_heldout": int(len(heldout)),
++        },
+         "notes": [
+             "All *_pct values are percentages; AUC/TPR use fractions.",
+-            "Standard deviations use population convention (ddof=0) over three repetitions.",
+-            "retrained means one epoch recovering only reset coordinates; gold means 40 epochs from fresh initialization.",
++            "Standard deviations use population convention (ddof=0) over the configured repetitions.",
++            "retrained means recovery of only reset coordinates for the case's configured epochs; gold means full training from fresh initialization.",
+             "Artifact field loss is true-class logit margin, not cross-entropy; CE cannot be reconstructed from it.",
+             "Prediction disagreement from gold is a behavioral proxy, not parameter or probability distance.",
+-            "No model checkpoints/full logits saved; cannot measure parameter distance or rerun curvature/recovery on the identical trained model.",
+-            "Single-deletion cost includes score construction, parameter selection, reset/recovery; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
+-            "LiRA uses 8 shadows, 4 IN and 4 OUT per record, a shared fitted bank, and a globally pooled IN variance and OUT variance.",
+-            "Retained heldout predictions cover all 4500 original-training exclusions, including LiRA candidate nonmembers removed from validation.",
++            "Model checkpoints are present only when the suite was run with save_models=True; logit margins are not full logits.",
++            "Single-deletion cost includes score construction, parameter selection, reset/recovery and saved checkpoint export when enabled; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
++            f"LiRA uses {len(scores)} shared shadows with balanced IN/OUT membership per record and globally pooled IN/OUT variances.",
++            "Retained heldout predictions cover all original-training exclusions, including LiRA candidate nonmembers removed from validation.",
+         ],
+         "lira_candidate_members": int(membership.sum()),
+         "lira_candidate_nonmembers": int((~membership).sum()),
+@@ -199,10 +226,12 @@ def main():
+         "lira_shadow_in_counts": np.unique(shadow_membership.sum(axis=0)).tolist(),
+         "lira_global_std_in": std_in,
+         "lira_global_std_out": std_out,
+-        "suite_timings": read_pickle(INPUT / "stage_timings.pkl"),
++        "suite_timings": read_pickle(source / "stage_timings.pkl"),
+     }
+-    (OUTPUT / "cifar_audit_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
++    (output / "cifar_audit_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+     print(json.dumps(metadata, indent=2))
++    if not efficiency_pass:
++        raise RuntimeError('At least one deletion cost as much as gold retraining; see timing CSV')
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/experiments/configs/cifar_full_validation.py b/experiments/configs/cifar_full_validation.py
+new file mode 100644
+index 0000000..44f9c61
+--- /dev/null
++++ b/experiments/configs/cifar_full_validation.py
+@@ -0,0 +1,80 @@
++"""Three-run CIFAR10 core-score benchmark with a shared online-LiRA bank.
++
++Every original and gold model trains for 40 epochs on the full assigned split.
++Each deletion scores a 2,048-record sample of the original and target losses:
++this is an explicit efficiency approximation, not full-population curvature.
++"""
++
++import argparse
++from pathlib import Path
++
++import numpy as np
++import torch
++
++from experiments import spectral_runner
++
++
++def build_cases():
++    return [
++        {
++            'subtest': 0,
++            'unlearning_method': 'information',
++            'unlearning_percentage': float(mass),
++            'retrain_epochs': 5,
++            'reset_strategy': 'initial',
++            'tests': ['LiRA'],
++        }
++        for mass in np.linspace(0, 100, 10)
++    ]
++
++
++def build_config():
++    return {
++        'test_name': 'CIFAR_random_full',
++        'dataset_name': 'cifar10',
++        'num_clients': 10,
++        'num_classes': 10,
++        'distribution_type': 'random',
++        'model_name': 'resnet18',
++        'loss_name': 'cross_entropy',
++        'trainer_name': 'sgd',
++        'train_epochs': 40,
++        'learning_rate': 0.01,
++        'momentum': 0.9,
++        'target_client': 0,
++        'num_tests': 3,
++        'save_models': True,
++        'repetition_seed': 3000,
++        'num_shadow_models': 16,
++        'lira_seed': 2026,
++        'lira_global_variance': True,
++        'spectral_rank': 20,
++        'spectral_num_power_iters': 5,
++        'spectral_max_samples': 2048,
++        'spectral_target_max_samples': 2048,
++        'spectral_seed': 0,
++        'spectral_curvature_backend': 'full',
++        'spectral_eigenvalue_min': 1e-6,
++        'spectral_eigenvalue_rtol': 1e-5,
++    }
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--output', type=Path, required=True,
++                        help='New job directory under stat_tests/CIFAR')
++    args = parser.parse_args()
++    if args.output.exists():
++        parser.error('--output already exists; choose a new directory')
++
++    np.random.seed(2026)
++    torch.manual_seed(2026)
++    spectral_runner.set_batch_sizes(128, 128, 128, 128)
++    spectral_runner.run_repeated_tests(
++        build_config(), build_cases(), str(args.output),
++        num_workers=1, save_models=True, plot=False,
++    )
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/queue_full.sh b/queue_full.sh
+new file mode 100644
+index 0000000..49cb4e2
+--- /dev/null
++++ b/queue_full.sh
+@@ -0,0 +1,80 @@
++#!/bin/bash
++# Full CIFAR10 benchmark: three independent original/gold trainings, ten
++# score-mass settings per run, and online LiRA on every setting. One 16-model
++# shadow bank is shared across runs. The deletion score remains sampled so each
++# deletion can be measured against, and remain cheaper than, gold retraining.
++# Submit from the repository root with: sbatch queue_full.sh
++
++#SBATCH --account=CASD_prod
++#SBATCH --job-name=cifar_full
++#SBATCH --partition=boost_usr_prod
++#SBATCH --qos=normal
++#SBATCH --nodes=1
++#SBATCH --ntasks-per-node=1
++#SBATCH --cpus-per-task=8
++#SBATCH --gres=gpu:1
++#SBATCH --mem=120G
++#SBATCH --time=08:00:00
++#SBATCH --output=slurm-%x-%j.out
++#SBATCH --error=slurm-%x-%j.err
++
++set -euo pipefail
++PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:?Submit from the repository root}}"
++cd "${PROJECT_DIR}"
++OUTPUT_ROOT="${OUTPUT_ROOT:-stat_tests/CIFAR/full_job_${SLURM_JOB_ID}}"
++if [[ -e "${OUTPUT_ROOT}" ]]; then
++    echo "Output already exists: ${OUTPUT_ROOT}" >&2
++    exit 2
++fi
++if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
++    echo "This benchmark runs three repetitions sequentially; do not submit it as an array." >&2
++    exit 2
++fi
++
++export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
++export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
++export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
++export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK}"
++export PYTHONUNBUFFERED=1
++
++module purge
++module load profile/deeplrn
++module load "${CINECA_AI_MODULE:-cineca-ai}"
++CINECA_PYTHON="$(command -v python)"
++CINECA_TORCHVISION_ROOT="$("${CINECA_PYTHON}" - <<'PY'
++from pathlib import Path
++import torchvision
++print(Path(torchvision.__file__).resolve().parent.parent)
++PY
++)"
++
++VENV_PATH="${VENV_PATH:-${PROJECT_DIR}/venv}"
++if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
++    echo "Python environment not found at ${VENV_PATH}." >&2
++    exit 2
++fi
++source "${VENV_PATH}/bin/activate"
++PYTHON="$(command -v python)"
++export PYTHONPATH="${CINECA_TORCHVISION_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
++
++"${PYTHON}" - <<'PY'
++import torch
++import torchvision
++import backpack
++import sklearn
++assert torch.cuda.is_available(), "PyTorch cannot access the allocated GPU"
++print("GPU:", torch.cuda.get_device_name(0))
++print("PyTorch:", torch.__version__, "torchvision:", torchvision.__version__)
++print("BackPACK and scikit-learn: OK")
++PY
++
++echo "=== Full CIFAR benchmark: job ${SLURM_JOB_ID}; output ${OUTPUT_ROOT} ==="
++srun "${PYTHON}" -u -m experiments.configs.cifar_full_validation \
++    --output "${OUTPUT_ROOT}"
++
++echo "=== Validating and summarizing utility, LiRA and deletion cost ==="
++srun "${PYTHON}" -u validation/accuracy_audit/analyze_saved_cifar.py \
++    --input "${OUTPUT_ROOT}/CIFAR_random_full" \
++    --output "${OUTPUT_ROOT}/summary"
++echo "=== Full CIFAR benchmark finished ==="
++date
+diff --git a/tests/test_full_cifar_summary.py b/tests/test_full_cifar_summary.py
+new file mode 100644
+index 0000000..92dabf0
+--- /dev/null
++++ b/tests/test_full_cifar_summary.py
+@@ -0,0 +1,98 @@
++"""The full-run summarizer must accept LiRA results for every case."""
++
++import json
++import pickle
++from pathlib import Path
++import tempfile
++import unittest
++from unittest import mock
++
++import numpy as np
++
++from validation.accuracy_audit import analyze_saved_cifar
++
++
++class FullCifarSummaryTests(unittest.TestCase):
++    def test_all_case_lira_and_efficiency_summary(self):
++        def dump(path, value):
++            with path.open('wb') as stream:
++                pickle.dump(value, stream)
++
++        with tempfile.TemporaryDirectory() as temporary:
++            source = Path(temporary) / 'suite'
++            result = source / 'test_0'
++            result.mkdir(parents=True)
++            output = Path(temporary) / 'summary'
++            candidates = np.array([0, 1, 2, 3, 12, 13, 14, 15])
++            membership = np.array([True] * 4 + [False] * 4)
++            shadows = np.array([[(row + col) % 2 == 0 for col in range(8)]
++                                for row in range(8)])
++            bank = {
++                'scores': np.random.default_rng(7).normal(size=(8, 8)),
++                'shadow_membership': shadows,
++                'candidate_membership': membership,
++                'candidate_complete_indices': candidates,
++            }
++            np.savez(source / 'lira_shadow_bank.npz', **bank)
++            dump(source / 'labels.pkl', {'train': np.zeros(12, dtype=int),
++                                         'test': np.zeros(4, dtype=int)})
++            dump(source / 'clients_indices.pkl', [list(range(4)), list(range(4, 12))])
++            dump(source / 'init_params.pkl', {'num_tests': 1, 'target_client': 0})
++            dump(source / 'test_params.pkl', [
++                {'unlearning_percentage': mass, 'tests': ['LiRA']}
++                for mass in (0.0, 50.0)
++            ])
++            dump(source / 'stage_timings.pkl', {'lira_shadow_training_seconds': 1.0})
++            dump(result / 'score_diagnostics.pkl', {
++                'training_indices': list(range(10)),
++                'diagnostics': {
++                    'retained_eigenpair_relative_residuals': [0.1],
++                    'retained_rank': 1, 'subspace': {'converged': False},
++                    'sum_rule_relative_error': 0.0,
++                },
++                'full_samples': 5, 'target_samples': 4,
++            })
++            dump(result / 'stage_timings.pkl', {'score_seconds': 1.0,
++                                                'gold_retraining_seconds': 10.0})
++            train = {'pred': np.zeros(12, dtype=int), 'loss': np.ones(12)}
++            test = {'pred': np.zeros(4, dtype=int), 'loss': np.ones(4)}
++            dump(result / 'initial_eval_train_results.pkl', {'trained': train, 'shadow_out': train})
++            dump(result / 'initial_eval_test_results.pkl', {'trained': test, 'shadow_out': test})
++            initial_scores = np.linspace(-1, 1, 8)
++            dump(result / 'initial_lira_results.pkl', {
++                'trained': initial_scores, 'shadow_out': initial_scores,
++            })
++            names = ('reset', 'retrained', 'random_reset', 'random_retrained')
++            np.savez(result / 'eval_train_results.npz', **{
++                f'{name}__{field}': np.stack([train[field], train[field]])
++                for name in names for field in ('pred', 'loss')
++            })
++            np.savez(result / 'eval_test_results.npz', **{
++                f'{name}__{field}': np.stack([test[field], test[field]])
++                for name in names for field in ('pred', 'loss')
++            })
++            np.savez(result / 'eval_lira_results.npz', **{
++                name: np.stack([initial_scores, initial_scores]) for name in names
++            })
++            dump(result / 'lira_case_indices.pkl', [0, 1])
++            dump(result / 'extra_results.pkl', {
++                'case_index': [0, 1], 'reset_params_percentage': [0.0, 1.0],
++                'selection_seconds': [0.0, 0.1], 'recovery_seconds': [0.0, 0.5],
++                'unlearning_with_score_seconds': [1.0, 1.6],
++                'random_baseline_seconds': [0.0, 0.5],
++                'evaluation_seconds': [0.1, 0.1],
++                'lira_evaluation_seconds': [0.1, 0.1],
++            })
++            with mock.patch('sys.argv', [
++                'audit', '--input', str(source), '--output', str(output),
++            ]):
++                analyze_saved_cifar.main()
++            metadata = json.loads((output / 'cifar_audit_metadata.json').read_text())
++            self.assertEqual(metadata['lira_case_indices'], [0, 1])
++            self.assertTrue(metadata['efficiency_pass'])
++            self.assertEqual(metadata['split_sizes']['retained_training'], 6)
++            self.assertTrue((output / 'cifar_privacy_summary.csv').is_file())
++
++
++if __name__ == '__main__':
++    unittest.main()
