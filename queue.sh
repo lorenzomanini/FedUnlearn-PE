@@ -1,7 +1,7 @@
 #!/bin/bash
 # CIFAR-10 random-client spectral sweep on CINECA Leonardo Booster.
 # Submit from the repository root: sbatch queue.sh
-# Three training seeds share one 40-model online-LiRA bank; LiRA is evaluated
+# Twenty training seeds share one 40-model online-LiRA bank; LiRA is evaluated
 # at all ten score masses. Recovery ablations use queue_ablation.sh.
 # Overrides: PROJECT_DIR=/path/to/repo OUTPUT_ROOT=/path/to/new/results
 # VENV_PATH=/path/to/venv CINECA_AI_MODULE=cineca-ai/<version>

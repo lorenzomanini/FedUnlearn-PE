@@ -1,5 +1,5 @@
 from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets, random_split_subset, create_poisoned_data, poisoning_data
-from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
+from fisherunlearn import compute_client_information, find_informative_params, find_random_params_matching, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 from fisherunlearn import plot_information_parameters_tradeoff
 from fisherunlearn.information.spectral_wip import estimate_core_score
@@ -366,8 +366,13 @@ class _RevisedTest:
 
         logging.info("Training trained model...") 
         stage_start = time.perf_counter()
+        original_model = self.model_class()
+        self.initial_state_dict = {
+            name: value.detach().cpu().clone()
+            for name, value in original_model.state_dict().items()
+        }
         self.trained_model = self.trainer_function(
-            self.model_class(), self.loss_class(), train_subsets, eval_subsets,
+            original_model, self.loss_class(), train_subsets, eval_subsets,
             train_epochs
         )
         self.stage_timings['initial_training_seconds'] = time.perf_counter() - stage_start
@@ -476,7 +481,7 @@ class _RevisedTest:
         unlearning_method = test_params_dict['unlearning_method']
         unlearning_percentage = test_params_dict['unlearning_percentage']
         retrain_epochs = test_params_dict['retrain_epochs']
-        reset_strategy = test_params_dict.get('reset_strategy', 'zero')
+        reset_strategy = test_params_dict.get('reset_strategy', 'initial')
         if reset_strategy not in {'zero', 'initial'}:
             raise ValueError("reset_strategy must be 'zero' or 'initial'")
         whitelist = test_params_dict.get('whitelist', None)
@@ -497,10 +502,8 @@ class _RevisedTest:
         if num_reset_params != 0:
             recovery_start = time.perf_counter()
             reset_model = self.model_class()
-            # Copy before load_state_dict overwrites the fresh model's tensors.
-            # The same initialization is used by the matched random baseline.
             reset_reference = (
-                copy.deepcopy(reset_model.state_dict())
+                self.initial_state_dict
                 if reset_strategy == 'initial' else None
             )
             reset_state_dict = reset_parameters(
@@ -518,7 +521,7 @@ class _RevisedTest:
 
             random_start = time.perf_counter()
             reset_params_percentage = num_reset_params / self.num_total_params * 100
-            random_params = find_informative_params(self.client_information, 'random', reset_params_percentage, whitelist, blacklist)
+            random_params = find_random_params_matching(self.client_information, informative_params)
 
             random_reset_model = self.model_class()
             random_reset_state_dict = reset_parameters(

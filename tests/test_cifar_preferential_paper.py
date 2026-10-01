@@ -30,7 +30,7 @@ class CifarPreferentialPaperTests(unittest.TestCase):
         self.assertEqual((cases[0]['unlearning_percentage'],
                           cases[-1]['unlearning_percentage']), (0.0, 100.0))
         self.assertTrue(all(case['tests'] == ['LiRA'] for case in cases))
-        self.assertTrue(all(case['reset_strategy'] == 'zero' and
+        self.assertTrue(all(case['reset_strategy'] == 'initial' and
                             case['retrain_epochs'] == 1 for case in cases))
 
         np.random.seed(2026)

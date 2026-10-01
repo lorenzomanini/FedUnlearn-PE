@@ -69,8 +69,11 @@ def bootstrap(source_suite, repetition, output, seed=2026, batch_size=128):
     np.random.seed(seed)
     model_class = get_model_class(config)
     started = time.perf_counter()
+    original_model = model_class()
+    initial_state = {name: value.detach().clone()
+                     for name, value in original_model.state_dict().items()}
     trained = revised_simple_trainer(
-        model_class(), nn.CrossEntropyLoss(),
+        original_model, nn.CrossEntropyLoss(),
         [Subset(train_data, train_ids)], [Subset(train_data, validation_ids)],
         config['train_epochs'], config, train_batch_size=batch_size,
         eval_batch_size=batch_size,
@@ -91,6 +94,7 @@ def bootstrap(source_suite, repetition, output, seed=2026, batch_size=128):
     iteration.mkdir(parents=True, exist_ok=False)
     suite = iteration.parent
     checkpoint = output / 'original_model.pth'
+    torch.save(initial_state, output / 'initial_model.pth')
     torch.save(trained.state_dict(), checkpoint)
     write_pickle(suite / 'init_params.pkl', config)
     shutil.copy2(source_suite / 'labels.pkl', suite / 'labels.pkl')
@@ -158,8 +162,11 @@ def bootstrap_fresh(output, seed=2026, batch_size=128, train_epochs=40):
 
     torch.manual_seed(seed + 1)
     original_start = time.perf_counter()
+    original_model = model_class()
+    initial_state = {name: value.detach().clone()
+                     for name, value in original_model.state_dict().items()}
     original = revised_simple_trainer(
-        model_class(), nn.CrossEntropyLoss(), [Subset(train_data, train_ids)],
+        original_model, nn.CrossEntropyLoss(), [Subset(train_data, train_ids)],
         validation, train_epochs, config, train_batch_size=batch_size,
         eval_batch_size=batch_size,
     )
@@ -188,6 +195,7 @@ def bootstrap_fresh(output, seed=2026, batch_size=128, train_epochs=40):
     suite = iteration.parent
     checkpoint = output / 'original_model.pth'
     gold_checkpoint = output / 'gold_model.pth'
+    torch.save(initial_state, output / 'initial_model.pth')
     torch.save(original.state_dict(), checkpoint)
     torch.save(gold.state_dict(), gold_checkpoint)
     write_pickle(suite / 'init_params.pkl', config)

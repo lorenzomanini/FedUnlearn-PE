@@ -80,14 +80,22 @@ class RecoveryAblationTests(unittest.TestCase):
                     pickle.dump(value, stream)
             checkpoint = root / 'original.pth'
             torch.save(model.state_dict(), checkpoint)
+            initial = make_model()
             output = root / 'ablation'
             arguments = ['ablation', '--suite', str(root), '--checkpoint', str(checkpoint),
                          '--output', str(output), '--epochs', '1', '--rank', '2',
                          '--max-samples', '8', '--target-max-samples', '8', '--batch-size', '8']
+            with mock.patch('sys.argv', arguments), self.assertRaises(SystemExit):
+                ablation.main()
+            torch.save(initial.state_dict(), root / 'initial_model.pth')
             with mock.patch('sys.argv', arguments), mock.patch.object(
                 ablation, 'get_datasets', return_value=(dataset, dataset),
-            ), mock.patch.object(ablation, 'get_model_class', return_value=make_model):
+            ), mock.patch.object(ablation, 'get_model_class', return_value=make_model), mock.patch.object(
+                ablation, 'UnlearnNet', wraps=UnlearnNet,
+            ) as make_wrapper:
                 ablation.main()
+            for name, value in initial.state_dict().items():
+                torch.testing.assert_close(make_wrapper.call_args.kwargs['reset_reference'][name], value)
             report = json.loads((output / 'report.json').read_text())
             self.assertEqual(report['status'], 'completed_pending_utility_and_privacy_review')
             self.assertEqual(len(report['history']), 1)
@@ -136,6 +144,7 @@ class RecoveryAblationTests(unittest.TestCase):
             ):
                 checkpoint, suite = cifar_bootstrap.bootstrap(source, 0, output, batch_size=8)
             self.assertTrue(checkpoint.exists())
+            self.assertTrue((output / 'initial_model.pth').exists())
             self.assertTrue((output / 'manifest.json').exists())
             with (suite / 'test_0' / 'stage_timings.pkl').open('rb') as stream:
                 self.assertEqual(pickle.load(stream)['gold_retraining_seconds'], 3.0)
@@ -166,7 +175,14 @@ class RecoveryAblationTests(unittest.TestCase):
                     output, seed=7, batch_size=8, train_epochs=1,
                 )
             self.assertTrue(checkpoint.exists())
+            self.assertTrue((output / 'initial_model.pth').exists())
             self.assertTrue((output / 'gold_model.pth').exists())
+            with torch.random.fork_rng():
+                torch.manual_seed(8)
+                expected_initial = make_model().state_dict()
+            saved_initial = torch.load(output / 'initial_model.pth', weights_only=True)
+            for name, value in expected_initial.items():
+                torch.testing.assert_close(saved_initial[name], value, rtol=0, atol=0)
             with (suite / 'test_0' / 'score_diagnostics.pkl').open('rb') as stream:
                 split = pickle.load(stream)
             self.assertEqual(len(split['target_indices']), 4)

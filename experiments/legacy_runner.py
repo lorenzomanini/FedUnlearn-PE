@@ -1,5 +1,5 @@
 from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets, create_poisoned_data, poisoning_data
-from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
+from fisherunlearn import compute_client_information, find_informative_params, find_random_params_matching, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 
 import fisherunlearn
@@ -149,8 +149,13 @@ class Test:
         self.unlearning_comm_tracker = CommunicationTracker(len(self.clients_subsets), self.model_class())
 
         logging.info("Training model...") 
+        original_model = self.model_class()
+        self.initial_state_dict = {
+            name: value.detach().cpu().clone()
+            for name, value in original_model.state_dict().items()
+        }
         self.trained_model = self.trainer_function(
-            self.model_class(), self.loss_class(), self.clients_subsets, 
+            original_model, self.loss_class(), self.clients_subsets,
             self.train_epochs, comm_tracker=self.initial_training_comm_tracker
         )
         self.num_total_params = sum(p.numel() for p in self.trained_model.parameters())
@@ -191,10 +196,14 @@ class Test:
         unlearning_method = test_params_dict['unlearning_method']
         unlearning_percentage = test_params_dict['unlearning_percentage']
         retrain_epochs = test_params_dict['retrain_epochs']
+        reset_strategy = test_params_dict.get('reset_strategy', 'initial')
+        if reset_strategy not in {'zero', 'initial'}:
+            raise ValueError("reset_strategy must be 'zero' or 'initial'")
+        reset_reference = self.initial_state_dict if reset_strategy == 'initial' else None
         whitelist = test_params_dict.get('whitelist', None)
         blacklist = test_params_dict.get('blacklist', None)
 
-        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}")
+        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}, ResetStrategy={reset_strategy}")
 
         informative_params = find_informative_params(self.client_information, unlearning_method, unlearning_percentage, whitelist, blacklist)
         num_reset_params = 0
@@ -208,26 +217,26 @@ class Test:
 
         if num_reset_params != 0:
             reset_model = self.model_class()
-            reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params)
+            reset_state_dict = reset_parameters(self.trained_model.cpu(), informative_params, reset_reference)
             reset_model.load_state_dict(reset_state_dict)
 
             # Record the broadcast of the reset model to clients (Server -> Clients)
             # This is the "receive the new model with the reset parameters" part.
             self.unlearning_comm_tracker.record_downlink()
 
-            retrainer = UnlearnNet(reset_model, informative_params) 
+            retrainer = UnlearnNet(reset_model, informative_params, reset_reference)
             self.trainer_function(retrainer, self.loss_class(), self.benchmark_subsets, retrain_epochs, comm_tracker=retrain_comm_tracker)
             retrained_model = self.model_class()
             retrained_model.load_state_dict(retrainer.get_retrained_params())
 
             reset_params_percentage = num_reset_params / self.num_total_params * 100
-            random_params = find_informative_params(self.client_information, 'random', reset_params_percentage, whitelist, blacklist)
+            random_params = find_random_params_matching(self.client_information, informative_params)
 
             random_reset_model = self.model_class()
-            random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params)
+            random_reset_state_dict = reset_parameters(self.trained_model.cpu(), random_params, reset_reference)
             random_reset_model.load_state_dict(random_reset_state_dict)
 
-            random_retrainer = UnlearnNet(random_reset_model, random_params)
+            random_retrainer = UnlearnNet(random_reset_model, random_params, reset_reference)
             self.trainer_function(random_retrainer, self.loss_class(), self.benchmark_subsets, retrain_epochs, comm_tracker=random_retrain_comm_tracker)
             random_retrained_model = self.model_class()
             random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
@@ -245,6 +254,7 @@ class Test:
         result['num_total_params'] = self.num_total_params
         result['num_reset_params'] = num_reset_params
         result['reset_params_percentage'] = reset_params_percentage
+        result['reset_strategy'] = reset_strategy
 
         # Add communication metrics to results
         initial_comm = self.initial_training_comm_tracker.get_metrics()

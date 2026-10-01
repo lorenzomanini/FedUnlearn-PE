@@ -4,6 +4,7 @@ from . import runtime
 from .information import (
     compute_client_information,
     find_informative_params,
+    find_random_params_matching,
     plot_information_parameters_tradeoff,
 )
 from .privacy import mia_attack
@@ -20,6 +21,7 @@ __all__ = [
     "compute_client_information",
     "plot_information_parameters_tradeoff",
     "find_informative_params",
+    "find_random_params_matching",
     "reset_parameters",
     "UnlearnNet",
     "mia_attack",

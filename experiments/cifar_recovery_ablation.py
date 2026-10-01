@@ -88,6 +88,8 @@ def main():
     parser.add_argument('--repetition', type=int, default=0)
     parser.add_argument('--checkpoint', type=Path, required=True,
                         help='Original trained model state_dict for this repetition')
+    parser.add_argument('--initial-checkpoint', type=Path,
+                        help='Matching pretraining state_dict; defaults to initial_model.pth beside the checkpoint')
     parser.add_argument('--output', type=Path, required=True,
                         help='New output directory (must not already exist)')
     parser.add_argument('--reset-strategy', choices=['zero', 'initial'], default='initial')
@@ -111,6 +113,9 @@ def main():
         parser.error('Sample caps, rank and batch size must be positive; iterations nonnegative')
     if not args.checkpoint.is_file():
         parser.error('--checkpoint must name an existing original-model state_dict')
+    initial_checkpoint = args.initial_checkpoint or args.checkpoint.with_name('initial_model.pth')
+    if args.reset_strategy == 'initial' and not initial_checkpoint.is_file():
+        parser.error('initial reset requires the matching pretraining state_dict')
     if args.output.exists():
         parser.error('--output already exists; choose a new directory')
 
@@ -154,6 +159,8 @@ def main():
               'budget_seconds': gold_seconds * args.budget_fraction,
               'provenance_check_seconds': synchronized_time(device) - setup_start,
               'status': 'running'}
+    if args.reset_strategy == 'initial':
+        report['initial_checkpoint'] = str(initial_checkpoint)
     start = synchronized_time(device)
     deadline = start + report['budget_seconds']
     try:
@@ -184,11 +191,10 @@ def main():
                 )
         if not report['selected_parameters']:
             raise ValueError('No coordinates selected; this is not a deletion candidate')
-        # Both strategies get identical initialization RNG and minibatch order.
-        torch.manual_seed(args.seed + 1000)
-        reference = model_class()
+        reference = (torch.load(initial_checkpoint, map_location='cpu', weights_only=True)
+                     if args.reset_strategy == 'initial' else None)
         recovered = UnlearnNet(model.cpu(), selected,
-                               reset_reference=reference if args.reset_strategy == 'initial' else None).to(device)
+                               reset_reference=reference).to(device)
         generator = torch.Generator().manual_seed(args.seed + 2000)
         train_loader = DataLoader(Subset(train_data, retained_ids), batch_size=args.batch_size,
                                   shuffle=True, generator=generator)

@@ -17,7 +17,7 @@ from experiments import spectral_runner
 TEST_NAME = 'CIFAR_pref_spectral_paper'
 NUM_REPETITIONS = 20
 NUM_SHADOW_MODELS = 40
-RESET_STRATEGY = 'zero'
+RESET_STRATEGY = 'initial'
 RECOVERY_EPOCHS = 1
 
 

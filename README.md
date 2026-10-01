@@ -73,7 +73,10 @@ The spectral runner uses full Hessian-vector products and retains every entry of
 and the squared row norms of `U @ B`, without constructing a full Hessian.
 Only positive Ritz values above the configured cutoff are inverted. Selection
 resets the smallest descending prefix reaching the requested score mass in each
-parameter group; zero-mass groups select nothing. This score is a selection
+module layer (including its weight and bias); zero-mass layers select nothing.
+The random baseline samples the same number of scalar coordinates in each layer,
+and both methods restore selected values from the original model's pretraining
+state. This score is a selection
 statistic, not a certificate of post-reset privacy.
 
 The default uses a fixed random sample of up to 512 actual training records and
@@ -123,7 +126,7 @@ NUM_TESTS=1 LIRA_SHADOW_MODELS=0 NUM_POWER_ITERS=2 python -m experiments.configs
 
 For a CIFAR-10 random-client sweep, submit `sbatch queue.sh` from the repository
 root. The launcher runs a GPU Hessian smoke check, then uses
-`experiments.configs.cifar_full_validation` with three training repetitions and
+`experiments.configs.cifar_full_validation` with 20 training repetitions and
 40 shared LiRA shadows (20 IN and 20 OUT per record). It audits all ten score
 masses and writes CSV summaries under `stat_tests/CIFAR/random_job_<jobid>/summary`.
 The score uses rank 20 and fixed 2,048-record full and target curvature samples;

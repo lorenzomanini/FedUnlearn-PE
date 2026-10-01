@@ -38,7 +38,7 @@ class SpectralPipelineTests(unittest.TestCase):
                 logging.getLogger().removeHandler(handler)
                 handler.close()
 
-    def run_suite(self, output, audit, reset_strategy='zero'):
+    def run_suite(self, output, audit, reset_strategy='zero', initial_states=None):
         params = dict(test_name='tiny_pipeline', target_client=0, train_epochs=2,
                       trainer_name='sgd', learning_rate=0.05, momentum=0.0,
                       num_tests=2, num_shadow_models=8 if audit else 0,
@@ -49,8 +49,12 @@ class SpectralPipelineTests(unittest.TestCase):
                       reset_strategy=reset_strategy,
                       retrain_epochs=1, tests=['LiRA'] if audit and p in (0, 100) else [])
                  for p in (0, 50, 100)]
-        trainer = lambda *args: training.revised_simple_trainer(
-            *args, init_params_dict=params, train_batch_size=16, eval_batch_size=16)
+        def trainer(*args):
+            if initial_states is not None and args[4] == params['train_epochs']:
+                initial_states.append({name: value.detach().clone()
+                                       for name, value in args[0].state_dict().items()})
+            return training.revised_simple_trainer(
+                *args, init_params_dict=params, train_batch_size=16, eval_batch_size=16)
         run_iteration = lambda i, args: runner._run_tests_iter(
             i, args, runner.SpectralTest, torch.device('cpu'), filter_error_results=True)
         runner._run_repeated_tests(
@@ -61,10 +65,11 @@ class SpectralPipelineTests(unittest.TestCase):
         return Path(output) / params['test_name']
 
     def test_initial_reset_is_recorded_and_used_by_both_recoveries(self):
+        initial_states = []
         with tempfile.TemporaryDirectory() as output, mock.patch.object(
             runner, 'UnlearnNet', wraps=runner.UnlearnNet,
         ) as make_wrapper:
-            suite = self.run_suite(output, False, reset_strategy='initial')
+            suite = self.run_suite(output, False, reset_strategy='initial', initial_states=initial_states)
             self.assertEqual(make_wrapper.call_count, 8)
             for call in make_wrapper.call_args_list:
                 self.assertIsNotNone(call.kwargs['reset_reference'])
@@ -72,6 +77,9 @@ class SpectralPipelineTests(unittest.TestCase):
                 score_reference = make_wrapper.call_args_list[case].kwargs['reset_reference']
                 random_reference = make_wrapper.call_args_list[case + 1].kwargs['reset_reference']
                 self.assertIs(score_reference, random_reference)
+                original_state = initial_states[2 * (case // 4)]
+                for name, value in original_state.items():
+                    torch.testing.assert_close(score_reference[name], value, rtol=0, atol=0)
             for repetition in range(2):
                 extra = persistence.load_pickle(suite / f'test_{repetition}', persistence.EXTRA_RESULTS)
                 self.assertEqual(extra['reset_strategy'], ['initial'] * 3)

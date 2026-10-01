@@ -30,6 +30,26 @@ def _prefix_count(cumulative_mass, percentage):
     return int(torch.searchsorted(cumulative_mass, target, right=False).item()) + 1
 
 
+def _layer_groups(information):
+    groups = {}
+    for name, scores in information.items():
+        groups.setdefault(name.rpartition(".")[0], []).append((name, torch.as_tensor(scores)))
+    return groups.values()
+
+
+def _coordinates(groups, selected):
+    result = {}
+    offset = 0
+    for name, scores in groups:
+        size = scores.numel()
+        flat = selected[(selected >= offset) & (selected < offset + size)] - offset
+        mask = torch.zeros(size, dtype=torch.bool, device=scores.device)
+        mask[flat.to(scores.device)] = True
+        result[name] = torch.argwhere(mask.reshape(scores.shape))
+        offset += size
+    return result
+
+
 def plot_information_parameters_tradeoff(
     information, method, whitelist=None, blacklist=None
 ):
@@ -43,12 +63,15 @@ def plot_information_parameters_tradeoff(
     params_values = np.zeros(len(percentages))
     total_information = 0.0
     total_params = 0
-    for name, layer_info in information.items():
-        if whitelist is not None and name not in whitelist:
-            continue
-        if blacklist is not None and name in blacklist:
-            continue
-        sorted_scores, _ = _sorted_scores(layer_info)
+    filtered = {
+        name: scores for name, scores in information.items()
+        if (whitelist is None or name in whitelist)
+        and (blacklist is None or name not in blacklist)
+    }
+    for groups in _layer_groups(filtered):
+        sorted_scores, _ = _sorted_scores(
+            torch.cat([scores.detach().reshape(-1) for _, scores in groups])
+        )
         scores = sorted_scores.to(device="cpu", dtype=torch.float64).numpy()
         if not scores.size:
             continue
@@ -88,11 +111,11 @@ def find_informative_params(
     graph=False,
     tuple_out=False,
 ):
-    """Return coordinates selected independently within each parameter group.
+    """Return coordinates selected independently within each module layer.
 
     ``information`` selects the smallest descending prefix reaching the requested
-    score mass. A group with zero total score selects nothing. ``parameters`` and
-    ``random`` select floor(group_size * percentage / 100) coordinates. Tied
+    score mass. A layer with zero total score selects nothing. ``parameters`` and
+    ``random`` select floor(layer_size * percentage / 100) coordinates. Tied
     scores are resolved in flattened coordinate order, so the count stays exact.
     """
     if method not in {"information", "parameters", "random"}:
@@ -100,13 +123,14 @@ def find_informative_params(
     if not math.isfinite(percentage) or not 0 <= percentage <= 100:
         raise ValueError("percentage must be between 0 and 100.")
 
+    filtered = {
+        name: scores for name, scores in information.items()
+        if (whitelist is None or name in whitelist)
+        and (blacklist is None or name not in blacklist)
+    }
     informative_params = {}
-    for name, layer_info in information.items():
-        if whitelist is not None and name not in whitelist:
-            continue
-        if blacklist is not None and name in blacklist:
-            continue
-        layer_info = torch.as_tensor(layer_info)
+    for groups in _layer_groups(filtered):
+        layer_info = torch.cat([scores.detach().reshape(-1) for _, scores in groups])
         size = layer_info.numel()
         if method == "random":
             count = int(size * percentage / 100)
@@ -123,16 +147,26 @@ def find_informative_params(
                 import matplotlib.pyplot as plt
 
                 plt.figure(figsize=(10, 5))
-                plt.title(name)
+                plt.title(groups[0][0].rpartition(".")[0] or "(root)")
                 plt.plot(sorted_scores.cpu().numpy())
                 plt.axvline(count, color="r", linestyle="--")
                 plt.xlabel("Parameters")
                 plt.ylabel("Information")
                 plt.show()
 
-        # Preserve the coordinate order previously returned by argwhere.
-        mask = torch.zeros(size, dtype=torch.bool, device=layer_info.device)
-        mask[selected] = True
-        indices = torch.argwhere(mask.reshape(layer_info.shape))
-        informative_params[name] = tuple(indices.t()) if tuple_out else indices
+        for name, indices in _coordinates(groups, selected).items():
+            informative_params[name] = tuple(indices.t()) if tuple_out else indices
     return informative_params
+
+
+def find_random_params_matching(information, selected_params):
+    """Draw uniformly within each layer, matching its selected scalar count."""
+    random_params = {}
+    for groups in _layer_groups({name: information[name] for name in selected_params}):
+        count = sum(len(selected_params[name]) for name, _ in groups)
+        size = sum(scores.numel() for _, scores in groups)
+        if count > size:
+            raise ValueError("Selected parameter count exceeds layer size.")
+        selected = torch.randperm(size, device=groups[0][1].device)[:count]
+        random_params.update(_coordinates(groups, selected))
+    return random_params

@@ -1,4 +1,4 @@
-"""Three-run CIFAR10 core-score benchmark with a shared online-LiRA bank.
+"""20-run CIFAR10 core-score benchmark with a shared online-LiRA bank.
 
 Every original and gold model trains for 40 epochs on the full assigned split.
 Each deletion scores a 2,048-record sample of the original and target losses:
@@ -42,8 +42,8 @@ def build_config():
         'learning_rate': 0.01,
         'momentum': 0.9,
         'target_client': 0,
-        'num_tests': 3,
-        'save_models': True,
+        'num_tests': 20,
+        'save_models': False,
         'repetition_seed': 3000,
         'num_shadow_models': 40,
         'lira_seed': 2026,
@@ -72,7 +72,7 @@ def main():
     spectral_runner.set_batch_sizes(128, 128, 128, 128)
     spectral_runner.run_repeated_tests(
         build_config(), build_cases(), str(args.output),
-        num_workers=1, save_models=True, plot=False,
+        num_workers=1, save_models=False, plot=False,
     )
 
 

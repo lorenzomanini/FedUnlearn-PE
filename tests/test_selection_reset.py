@@ -38,6 +38,37 @@ class ScoreSelectionTests(unittest.TestCase):
                     self.assertGreaterEqual(mass.item(), values.sum().item() * percentage / 100)
                     self.assertLess((mass - values[indices[-1, 0]]).item(), values.sum().item() * percentage / 100)
 
+    def test_layer_mass_and_random_count_include_weight_and_bias(self):
+        scores = {
+            "0.weight": torch.tensor([9., 1.]),
+            "0.bias": torch.tensor([8., 0.]),
+            "1.weight": torch.tensor([5., 0., 0.]),
+            "1.bias": torch.tensor([1.]),
+        }
+        selected = selection.find_informative_params(scores, "information", 60)
+        self.assertEqual({name: len(indices) for name, indices in selected.items()}, {
+            "0.weight": 1, "0.bias": 1, "1.weight": 1, "1.bias": 0,
+        })
+        for layer in ("0", "1"):
+            names = [name for name in scores if name.startswith(layer + ".")]
+            mass = sum(scores[name][tuple(selected[name].t())].sum() for name in names)
+            total = sum(scores[name].sum() for name in names)
+            self.assertGreaterEqual(mass.item(), (total * .6).item())
+        for seed in range(20):
+            torch.manual_seed(seed)
+            random = selection.find_random_params_matching(scores, selected)
+            self.assertEqual(sum(len(random[name]) for name in scores if name.startswith("0.")), 2)
+            self.assertEqual(sum(len(random[name]) for name in scores if name.startswith("1.")), 1)
+            for name in scores:
+                self.assertEqual(len(random[name].unique(dim=0)), len(random[name]))
+
+    def test_zero_mass_layer_has_no_random_reset(self):
+        scores = {"0.weight": torch.zeros(2), "0.bias": torch.zeros(1),
+                  "1.weight": torch.tensor([3., 1.])}
+        selected = selection.find_informative_params(scores, "information", 50)
+        random = selection.find_random_params_matching(scores, selected)
+        self.assertEqual([len(random[name]) for name in scores], [0, 0, 1])
+
     def test_ties_choose_exact_deterministic_count(self):
         expected = torch.tensor([[0, 0], [0, 1]])
         for method in ("information", "parameters"):
