@@ -14,6 +14,15 @@ from validation.accuracy_audit import analyze_saved_cifar
 
 
 class FullCifarSummaryTests(unittest.TestCase):
+    def test_gaussian_fit_respects_variance_mode(self):
+        scores = np.array([[0., 0.], [2., 4.], [4., 8.], [6., 12.]])
+        membership = np.ones_like(scores, dtype=bool)
+        means, local_std = analyze_saved_cifar.fit_gaussian(scores, membership, False)
+        _, global_std = analyze_saved_cifar.fit_gaussian(scores, membership, True)
+        np.testing.assert_array_equal(means, [3., 6.])
+        np.testing.assert_allclose(local_std, [np.sqrt(20 / 3), np.sqrt(80 / 3)])
+        self.assertAlmostEqual(global_std, np.sqrt(100 / 6))
+
     def test_all_case_lira_and_efficiency_summary(self):
         def dump(path, value):
             with path.open('wb') as stream:
@@ -105,6 +114,19 @@ class FullCifarSummaryTests(unittest.TestCase):
             self.assertTrue(all(row['lira_auc_mean'] for row in gold[:2]))
             self.assertEqual(gold[2]['target_count_mean'], '0.0')
             self.assertFalse(gold[2]['lira_auc_mean'])
+
+            dump(source / 'init_params.pkl', {'num_tests': 1, 'target_client': 0,
+                                              'distribution_type': 'preferential_class',
+                                              'lira_global_variance': False})
+            with mock.patch('sys.argv', [
+                'audit', '--input', str(source), '--output', str(Path(temporary) / 'local_summary'),
+            ]):
+                analyze_saved_cifar.main()
+            local_metadata = json.loads(
+                (Path(temporary) / 'local_summary' / 'cifar_audit_metadata.json').read_text()
+            )
+            self.assertEqual(local_metadata['lira_variance_mode'], 'per_record')
+            self.assertIsNone(local_metadata['lira_global_std_in'])
 
 
 if __name__ == '__main__':

@@ -25,12 +25,13 @@ def read_pickle(path):
         return pickle.load(stream)
 
 
-def fit_gaussian(scores, membership):
+def fit_gaussian(scores, membership, global_variance=True):
     counts = membership.sum(axis=0)
     assert np.all(counts >= 2)
     mean = np.where(membership, scores, 0).sum(axis=0) / counts
-    variance = np.where(membership, (scores - mean) ** 2, 0).sum() / (counts - 1).sum()
-    return mean, max(float(np.sqrt(variance)), 1e-6)
+    squared = np.where(membership, (scores - mean) ** 2, 0).sum(axis=0)
+    variance = squared.sum() / (counts - 1).sum() if global_variance else squared / (counts - 1)
+    return mean, np.sqrt(np.maximum(variance, 1e-12))
 
 
 def summarize(rows, group_fields):
@@ -80,8 +81,9 @@ def main():
     assert np.isfinite(scores).all()
     assert np.unique(candidates).size == candidates.size
     assert set(candidates[membership]) == set(target)
-    mean_in, std_in = fit_gaussian(scores, shadow_membership)
-    mean_out, std_out = fit_gaussian(scores, ~shadow_membership)
+    global_variance = bool(configuration.get("lira_global_variance", True))
+    mean_in, std_in = fit_gaussian(scores, shadow_membership, global_variance)
+    mean_out, std_out = fit_gaussian(scores, ~shadow_membership, global_variance)
     preferential = configuration.get("distribution_type") == "preferential_class"
     target_classes = np.unique(labels["train"][target]) if preferential else []
     other_classes = np.setdiff1d(np.unique(labels["test"]), target_classes) if preferential else []
@@ -253,7 +255,7 @@ def main():
             "Prediction disagreement from gold is a behavioral proxy, not parameter or probability distance.",
             "Model checkpoints are present only when the suite was run with save_models=True; logit margins are not full logits.",
             "Single-deletion cost includes score construction, parameter selection, reset/recovery and saved checkpoint export when enabled; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
-            f"LiRA uses {len(scores)} shared shadows with balanced IN/OUT membership per record and globally pooled IN/OUT variances.",
+            f"LiRA uses {len(scores)} shared shadows with balanced IN/OUT membership per record and {'globally pooled' if global_variance else 'per-record'} IN/OUT variances.",
             "Retained heldout predictions cover all original-training exclusions, including LiRA candidate nonmembers removed from validation.",
             "Preferential-client runs report test accuracy by class, plus forget accuracy and LiRA AUC/TPR where the target client has records of that class.",
         ],
@@ -262,8 +264,9 @@ def main():
         "lira_nonmembers_train_holdout": int(np.sum(candidates[~membership] < len(labels["train"]))),
         "lira_nonmembers_test": int(np.sum(candidates[~membership] >= len(labels["train"]))),
         "lira_shadow_in_counts": np.unique(shadow_membership.sum(axis=0)).tolist(),
-        "lira_global_std_in": std_in,
-        "lira_global_std_out": std_out,
+        "lira_global_std_in": float(std_in) if global_variance else None,
+        "lira_global_std_out": float(std_out) if global_variance else None,
+        "lira_variance_mode": "global" if global_variance else "per_record",
         "suite_timings": read_pickle(source / "stage_timings.pkl"),
     }
     (output / "cifar_audit_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
