@@ -1,6 +1,7 @@
 """20-run CIFAR10 core-score benchmark with a shared online-LiRA bank.
 
 Every original and gold model trains for 40 epochs on the full assigned split.
+Selected coordinates recover for one epoch on the retained records.
 Each deletion scores a 2,048-record sample of the original and target losses:
 this is an explicit efficiency approximation, not full-population curvature.
 """
@@ -20,7 +21,7 @@ def build_cases():
             'subtest': 0,
             'unlearning_method': 'information',
             'unlearning_percentage': float(mass),
-            'retrain_epochs': 5,
+            'retrain_epochs': 1,
             'reset_strategy': 'initial',
             'tests': ['LiRA'],
         }

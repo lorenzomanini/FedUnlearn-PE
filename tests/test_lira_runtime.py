@@ -137,18 +137,18 @@ class LiRARuntimeTests(unittest.TestCase):
                 self.assertTrue(all("test_accuracy" in case["tests"] for case in cases))
                 self.assertEqual(original["tests"], ["test_accuracy", "LiRA"])
 
-    def test_full_cifar_profile_audits_every_mass_across_three_runs(self):
+    def test_full_cifar_profile_audits_every_mass_across_twenty_runs(self):
         config = cifar_full_validation.build_config()
         cases = cifar_full_validation.build_cases()
-        self.assertEqual(config['num_tests'], 3)
+        self.assertEqual(config['num_tests'], 20)
         self.assertEqual(config['repetition_seed'], 3000)
-        self.assertTrue(config['save_models'])
-        self.assertEqual(config['num_shadow_models'], 16)
+        self.assertFalse(config['save_models'])
+        self.assertEqual(config['num_shadow_models'], 40)
         self.assertEqual(config['train_epochs'], 40)
         self.assertEqual(len(cases), 10)
         self.assertEqual([case['unlearning_percentage'] for case in cases][::9], [0.0, 100.0])
         self.assertTrue(all(case['tests'] == ['LiRA'] for case in cases))
-        self.assertTrue(all(case['reset_strategy'] == 'initial' and case['retrain_epochs'] == 5 for case in cases))
+        self.assertTrue(all(case['reset_strategy'] == 'initial' and case['retrain_epochs'] == 1 for case in cases))
 
     def test_save_models_persists_original_gold_and_recovered_case(self):
         values = {'trained': {'pred': np.array([0]), 'loss': np.array([1.0])}}
