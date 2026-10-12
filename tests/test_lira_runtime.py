@@ -1,7 +1,9 @@
 """Bounded LiRA training, sparse audit artifacts, and membership regressions."""
 
 import logging
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -12,7 +14,8 @@ from torch import nn
 from torch.utils.data import Subset, TensorDataset
 
 from experiments import persistence, runner
-from experiments.configs import cifar_full_validation, revised_diagonal, spectral_wip
+from experiments.configs import cifar_diagonal_validation, cifar_full_validation, revised_diagonal, spectral_wip
+from validation.accuracy_audit import analyze_saved_cifar
 
 
 class LiRARuntimeTests(unittest.TestCase):
@@ -35,6 +38,50 @@ class LiRARuntimeTests(unittest.TestCase):
             if handler not in self.handlers:
                 logging.getLogger().removeHandler(handler)
                 handler.close()
+
+    def test_queue_handles_regular_and_array_submissions(self):
+        """Run the launcher with stubbed cluster commands, without training."""
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            binary = temporary / 'bin'
+            binary.mkdir()
+            python = binary / 'python'
+            python.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '/tmp'\n")
+            python.chmod(0o755)
+            (binary / 'activate').write_text('')
+            stub = temporary / 'cluster.sh'
+            stub.write_text('module() { :; }\nsrun() { printf "%s\\0" "$@" >> "$QUEUE_CALLS"; printf "\\n" >> "$QUEUE_CALLS"; }\n')
+            for task, modes in ((None, ['off', 'on']), ('0', ['off']), ('1', ['on']), ('2', [])):
+                with self.subTest(task=task):
+                    calls = temporary / f'calls_{task}'
+                    environment = dict(os.environ, PROJECT_DIR=str(root),
+                                       VENV_PATH=str(temporary), OUTPUT_ROOT=str(temporary / 'results'),
+                                       SLURM_JOB_ID='123', SLURM_CPUS_PER_TASK='1',
+                                       PATH=f'{binary}{os.pathsep}{os.environ["PATH"]}',
+                                       QUEUE_CALLS=str(calls), QUEUE_STUB=str(stub),
+                                       QUEUE_SCRIPT=str(root / 'queue_diagonal_validation.sh'))
+                    environment.pop('SLURM_ARRAY_TASK_ID', None)
+                    if task is not None:
+                        environment['SLURM_ARRAY_TASK_ID'] = task
+                    result = subprocess.run(
+                        ['bash', '-c', 'source "$QUEUE_STUB"; source "$QUEUE_SCRIPT"'],
+                        env=environment, capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0 if modes else 2, result.stderr)
+                    if not modes:
+                        self.assertFalse(calls.exists())
+                        continue
+                    commands = [line.split('\0')[:-1] for line in calls.read_text().splitlines()]
+                    self.assertEqual(len(commands), 3 * len(modes))
+                    for index, mode in enumerate(modes):
+                        smoke, experiment, audit = commands[3 * index:3 * index + 3]
+                        self.assertIn('--smoke', smoke)
+                        for command in (smoke, experiment):
+                            self.assertEqual(command[command.index('--stochastic-correction') + 1], mode)
+                        output = temporary / 'results' / f'diagonal_stochastic_{mode}_job_123'
+                        self.assertEqual(experiment[-2:], ['--output', str(output)])
+                        self.assertEqual(audit[-2:], ['--output', str(output / 'summary')])
 
     def _run_suite(self, directory, cases, trainer, iteration, params=None):
         runner._run_repeated_tests(
@@ -149,6 +196,47 @@ class LiRARuntimeTests(unittest.TestCase):
         self.assertEqual([case['unlearning_percentage'] for case in cases][::9], [0.0, 100.0])
         self.assertTrue(all(case['tests'] == ['LiRA'] for case in cases))
         self.assertTrue(all(case['reset_strategy'] == 'initial' and case['retrain_epochs'] == 1 for case in cases))
+
+    def test_diagonal_variants_score_recover_and_write_audit_summaries(self):
+        torch.set_num_threads(1)
+        runner.set_device(torch.device('cpu'))
+        runner.set_batch_sizes(8, 8, 16, 16)
+        train = TensorDataset(torch.randn(60, 2), torch.arange(60) % 2)
+        test = TensorDataset(torch.randn(24, 2), torch.arange(24) % 2)
+        clients = [Subset(train, list(range(i, i + 20))) for i in (0, 20, 40)]
+        for correction in (False, True):
+            with self.subTest(correction=correction), tempfile.TemporaryDirectory() as directory:
+                config = cifar_diagonal_validation.build_config(correction)
+                self.assertEqual(config['stochastic_correction'], correction)
+                self.assertEqual(config['hessian_method'], 'diag_ggn_mc')
+                self.assertFalse(any(key.startswith('spectral_') for key in config))
+                self.assertEqual(config['num_tests'], 20)
+                self.assertEqual(config['num_shadow_models'], 40)
+                config.update(num_tests=1, num_shadow_models=4, train_epochs=1,
+                              info_use_converter=False)
+                cases = cifar_diagonal_validation.build_cases()[::9]
+                torch.manual_seed(2026)
+                with mock.patch.object(runner, 'get_datasets', return_value=(train, test)), \
+                     mock.patch.object(runner, 'get_clients_subsets', return_value=clients), \
+                     mock.patch.object(runner, 'get_model_class', return_value=lambda: nn.Linear(2, 2)):
+                    runner.run_repeated_tests(config, cases, directory, num_workers=1)
+                suite = Path(directory) / config['test_name']
+                saved = persistence.load_pickle(suite / 'test_0', 'score_diagnostics.pkl')
+                self.assertEqual(saved['information_method'], 'diagonal')
+                self.assertEqual(saved['full_samples'], 60)
+                self.assertEqual(len(saved['training_indices']), 56)
+                extra = persistence.load_pickle(suite / 'test_0', persistence.EXTRA_RESULTS)
+                self.assertEqual(extra['num_reset_params'][0], 0)
+                self.assertGreater(extra['num_reset_params'][1], 0)
+                with mock.patch('sys.argv', ['audit', '--input', str(suite),
+                                            '--output', str(suite / 'summary')]):
+                    try:
+                        analyze_saved_cifar.main()
+                    except RuntimeError as error:
+                        # A tiny one-epoch gold model can be cheaper than scoring.
+                        self.assertEqual(str(error), 'At least one deletion cost as much as gold retraining; see timing CSV')
+                for name in ('utility', 'privacy', 'timings'):
+                    self.assertTrue((suite / 'summary' / f'cifar_{name}_summary.csv').is_file())
 
     def test_save_models_persists_original_gold_and_recovered_case(self):
         values = {'trained': {'pred': np.array([0]), 'loss': np.array([1.0])}}

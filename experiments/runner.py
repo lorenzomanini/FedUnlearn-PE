@@ -2,7 +2,7 @@ from fisherunlearn.clients_utils import split_dataset_by_class_distribution, con
 from fisherunlearn import compute_client_information, find_informative_params, find_random_params_matching, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 from fisherunlearn import plot_information_parameters_tradeoff
-from fisherunlearn.information.spectral_wip import estimate_core_score
+from fisherunlearn.information.spectral_wip import estimate_core_score, estimate_generalized_core_score
 
 import fisherunlearn
 
@@ -312,6 +312,27 @@ def _curvature_loader(dataset, max_samples, batch_size, seed):
     return DataLoader(Subset(dataset, indices), batch_size=batch_size, shuffle=False)
 
 
+def _disjoint_curvature_loaders(dataset, first_samples, second_samples, batch_size, seed):
+    """Two fixed, disjoint random samples; zero/None for the first means all records.
+
+    The second loader is None when no second sample is requested.
+    """
+    for value in (first_samples, second_samples):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise ValueError('spectral sample limits must be nonnegative integers or None')
+    if len(dataset) == 0:
+        raise ValueError('Curvature estimation requires a nonempty dataset')
+    order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(seed)).tolist()
+    first = order[:first_samples] if first_samples else order
+    second = order[len(first):len(first) + second_samples] if second_samples else []
+    if second_samples and len(second) < second_samples:
+        raise ValueError('Not enough records outside the curvature sample for the control')
+    loader = lambda indices: DataLoader(Subset(dataset, indices), batch_size=batch_size, shuffle=False)
+    return loader(first), loader(second) if second else None
+
+
 class _RevisedTest:
     def __init__(self, train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, 
                  init_params_dict={}, poisoned_backdoor_dataset=None, clean_backdoor_dataset=None,
@@ -380,8 +401,28 @@ class _RevisedTest:
         if _information_method == "diagonal":
             logging.info("Computing information...")
             stage_start = time.perf_counter()
-            self.client_information = compute_client_information(self.target_client, self.trained_model, self.loss_class(), self.clients_subsets, stochastic_correction=init_params_dict.get('stochastic_correction', False), use_converter=init_params_dict.get('info_use_converter', True), method=init_params_dict['hessian_method'], learning_rate=init_params_dict['learning_rate'], momentum=init_params_dict['momentum'])
+            # 'clients' keeps the historical score over every client record, including
+            # retained validation records; 'training' uses only the records the model was
+            # trained on, the same population as the spectral score.
+            diagonal_population = init_params_dict.get('diagonal_population', 'clients')
+            if diagonal_population == 'clients':
+                score_subsets, score_target = self.clients_subsets, self.target_client
+            elif diagonal_population == 'training':
+                score_subsets, score_target = train_subsets, len(shadow_out_subsets)
+            else:
+                raise ValueError("diagonal_population must be 'clients' or 'training'")
+            self.client_information = compute_client_information(score_target, self.trained_model, self.loss_class(), score_subsets, stochastic_correction=init_params_dict.get('stochastic_correction', False), use_converter=init_params_dict.get('info_use_converter', True), method=init_params_dict['hessian_method'], learning_rate=init_params_dict['learning_rate'], momentum=init_params_dict['momentum'])
             self.stage_timings['score_seconds'] = time.perf_counter() - stage_start
+            self.score_diagnostics = {
+                'information_method': 'diagonal',
+                'hessian_method': init_params_dict['hessian_method'],
+                'stochastic_correction': init_params_dict.get('stochastic_correction', False),
+                'diagonal_population': diagonal_population,
+                'training_indices': list(concatenate_subsets(train_subsets).indices),
+                'target_indices': list(self.target_subset.indices),
+                'full_samples': sum(len(subset) for subset in score_subsets),
+                'target_samples': len(self.target_subset),
+            }
 
         logging.info("Training gold-standard client-removal model...")
         stage_start = time.perf_counter()
@@ -411,34 +452,74 @@ class _RevisedTest:
             # Curvature is evaluated on the examples actually used for training.
             # Fixed random subsets keep every iteration on the same operator.
             score_dataset = concatenate_subsets(train_subsets)
+            retained_dataset = concatenate_subsets(shadow_out_subsets)
             seed = init_params_dict.get('spectral_seed', 0)
-            self.total_loader = _curvature_loader(
-                score_dataset, init_params_dict.get('spectral_max_samples', 512),
-                INFO_BATCH_SIZE, seed,
-            )
+            # 'top_curvature' takes the top eigenvectors of H; 'generalized' the top
+            # eigenvectors of the pencil (H_T, H), which maximize the core for a rank.
+            subspace = init_params_dict.get('spectral_subspace', 'top_curvature')
+            target_fraction = len(self.target_subset) / len(score_dataset)
+            control = init_params_dict.get('spectral_control_target', False)
             self.client_loader = _curvature_loader(
                 self.target_subset, init_params_dict.get('spectral_target_max_samples', 512),
                 INFO_BATCH_SIZE, seed + 1,
             )
+            if subspace == 'top_curvature':
+                self.total_loader = _curvature_loader(
+                    score_dataset, init_params_dict.get('spectral_max_samples', 512),
+                    INFO_BATCH_SIZE, seed,
+                )
+                # Optional control: an equal-size sample of retained training records,
+                # scored in the same basis, measures how target-specific the ranking is.
+                self.control_loader = None
+                if control:
+                    self.control_loader = _curvature_loader(
+                        retained_dataset,
+                        init_params_dict.get('spectral_target_max_samples', 512),
+                        INFO_BATCH_SIZE, seed + 2,
+                    )
+            elif subspace == 'generalized':
+                # H = (1 - a) H_R + a H_T from a retained sample and the target sample.
+                # The control comes from retained records outside H's sample, so a
+                # subspace chosen for curvature relative to H is not biased against it.
+                self.total_loader, self.control_loader = _disjoint_curvature_loaders(
+                    retained_dataset, init_params_dict.get('spectral_max_samples', 512),
+                    len(self.client_loader.dataset) if control else 0, INFO_BATCH_SIZE, seed,
+                )
+            else:
+                raise ValueError("spectral_subspace must be 'top_curvature' or 'generalized'")
             logging.info(
-                'Computing core score on %s/%s training and %s/%s target records...',
-                len(self.total_loader.dataset), len(score_dataset),
+                'Computing %s core score on %s/%s %s and %s/%s target records...', subspace,
+                len(self.total_loader.dataset), len(self.total_loader.dataset.dataset),
+                'training' if subspace == 'top_curvature' else 'retained',
                 len(self.client_loader.dataset), len(self.target_subset),
             )
             stage_start = time.perf_counter()
             cuda_devices = [torch.device(DEVICE).index or 0] if torch.device(DEVICE).type == 'cuda' else []
             with torch.random.fork_rng(devices=cuda_devices):
                 torch.manual_seed(seed)
-                score = estimate_core_score(
-                    self.trained_model.to(DEVICE), self.total_loader, self.client_loader,
-                    loss_class(), init_params_dict.get('spectral_rank', 10), DEVICE,
-                    num_power_iters=init_params_dict.get('spectral_num_power_iters', _num_power_iters),
+                options = dict(
                     hmp_chunk_size=init_params_dict.get('spectral_hmp_chunk_size', 1),
-                    curvature_backend=init_params_dict.get('spectral_curvature_backend', 'full'),
+                    curvature_backend=init_params_dict.get(
+                        'spectral_curvature_backend', 'ggn' if subspace == 'generalized' else 'full'),
                     eigenvalue_threshold=init_params_dict.get('spectral_eigenvalue_min', 1e-6),
                     relative_eigenvalue_threshold=init_params_dict.get('spectral_eigenvalue_rtol', 1e-5),
-                    power_tolerance=init_params_dict.get('spectral_power_tolerance', 1e-3),
+                    loader_control=self.control_loader,
                 )
+                iterations = init_params_dict.get('spectral_num_power_iters', _num_power_iters)
+                tolerance = init_params_dict.get('spectral_power_tolerance', 1e-3)
+                if subspace == 'top_curvature':
+                    score = estimate_core_score(
+                        self.trained_model.to(DEVICE), self.total_loader, self.client_loader,
+                        loss_class(), init_params_dict.get('spectral_rank', 10), DEVICE,
+                        num_power_iters=iterations, power_tolerance=tolerance, **options,
+                    )
+                else:
+                    score = estimate_generalized_core_score(
+                        self.trained_model.to(DEVICE), self.total_loader, self.client_loader,
+                        loss_class(), init_params_dict.get('spectral_rank', 10), DEVICE,
+                        target_fraction, num_iters=iterations, tolerance=tolerance,
+                        damping=init_params_dict.get('spectral_damping', 1e-4), **options,
+                    )
             self.trained_model.cpu()
             self.stage_timings['score_seconds'] = time.perf_counter() - stage_start
             self.client_information = score['diag_by_name']
@@ -447,18 +528,36 @@ class _RevisedTest:
                 if key not in {'diag_by_name', 'diag_flat', 'diag_tensors', 'evecs'}
             }
             self.score_diagnostics.update(
-                full_samples=len(self.total_loader.dataset),
+                spectral_subspace=subspace,
                 target_samples=len(self.client_loader.dataset),
                 full_population=len(score_dataset),
                 target_population=len(self.target_subset),
-                full_sample_positions=list(self.total_loader.dataset.indices),
                 target_sample_positions=list(self.client_loader.dataset.indices),
                 training_indices=list(score_dataset.indices),
                 target_indices=list(self.target_subset.indices),
-                target_fraction=len(self.target_subset) / len(score_dataset),
-                information_scale=2 * (len(self.target_subset) / len(score_dataset)) ** 2,
+                target_fraction=target_fraction,
+                information_scale=2 * target_fraction ** 2,
                 seed=seed,
             )
+            if subspace == 'top_curvature':
+                self.score_diagnostics.update(
+                    full_samples=len(self.total_loader.dataset),
+                    full_sample_positions=list(self.total_loader.dataset.indices),
+                )
+            else:
+                # H's sample is the retained sample plus the target sample; retained
+                # positions index the concatenated retained training subsets.
+                self.score_diagnostics.update(
+                    full_samples=len(self.total_loader.dataset) + len(self.client_loader.dataset),
+                    retained_samples=len(self.total_loader.dataset),
+                    retained_sample_positions=list(self.total_loader.dataset.indices),
+                )
+            if self.control_loader is not None:
+                # Positions index the concatenated retained training subsets.
+                self.score_diagnostics.update(
+                    control_samples=len(self.control_loader.dataset),
+                    control_sample_positions=list(self.control_loader.dataset.indices),
+                )
             logging.info(
                 'Core score: retained rank=%s/%s, sum-rule relative error=%.3g, %.2f seconds',
                 score['diagnostics']['retained_rank'], score['diagnostics']['requested_rank'],
@@ -484,20 +583,36 @@ class _RevisedTest:
         reset_strategy = test_params_dict.get('reset_strategy', 'initial')
         if reset_strategy not in {'zero', 'initial'}:
             raise ValueError("reset_strategy must be 'zero' or 'initial'")
+        # 'selected' retrains only reset coordinates (TRIM); 'all' fine-tunes every
+        # weight. Both arms always use the same reset value and recovery scope.
+        recovery_scope = test_params_dict.get('recovery_scope', 'selected')
+        if recovery_scope not in {'selected', 'all'}:
+            raise ValueError("recovery_scope must be 'selected' or 'all'")
         whitelist = test_params_dict.get('whitelist', None)
         blacklist = test_params_dict.get('blacklist', None)
 
-        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}, ResetStrategy={reset_strategy}")
+        logging.info(f"Unlearning: Method={unlearning_method}, Percentage={unlearning_percentage}, RetrainEpochs={retrain_epochs}, ResetStrategy={reset_strategy}, RecoveryScope={recovery_scope}")
 
         selection_start = time.perf_counter()
         informative_params = find_informative_params(self.client_information, unlearning_method, unlearning_percentage, whitelist, blacklist)
         num_reset_params = 0
         for indices_tensor in informative_params.values():
-            if indices_tensor is not None and indices_tensor.numel() > 0: 
+            if indices_tensor is not None and indices_tensor.numel() > 0:
                  num_reset_params += indices_tensor.shape[0]
         selection_seconds = time.perf_counter() - selection_start
         recovery_seconds = 0.0
         random_baseline_seconds = 0.0
+
+        def recover(model, selected_params, reset_reference=None):
+            if recovery_scope == 'all':
+                return self.trainer_function(copy.deepcopy(model), self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
+            retrainer = UnlearnNet(
+                model, selected_params, reset_reference=reset_reference,
+            )
+            self.trainer_function(retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
+            recovered_model = self.model_class()
+            recovered_model.load_state_dict(retrainer.get_retrained_params())
+            return recovered_model
 
         if num_reset_params != 0:
             recovery_start = time.perf_counter()
@@ -510,13 +625,7 @@ class _RevisedTest:
                 self.trained_model, informative_params, reset_reference=reset_reference,
             )
             reset_model.load_state_dict(reset_state_dict)
-
-            retrainer = UnlearnNet(
-                reset_model, informative_params, reset_reference=reset_reference,
-            )
-            self.trainer_function(retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
-            retrained_model = self.model_class()
-            retrained_model.load_state_dict(retrainer.get_retrained_params())
+            retrained_model = recover(reset_model, informative_params, reset_reference)
             recovery_seconds = time.perf_counter() - recovery_start
 
             random_start = time.perf_counter()
@@ -528,27 +637,30 @@ class _RevisedTest:
                 self.trained_model.cpu(), random_params, reset_reference=reset_reference,
             )
             random_reset_model.load_state_dict(random_reset_state_dict)
-
-            random_retrainer = UnlearnNet(
-                random_reset_model, random_params, reset_reference=reset_reference,
-            )
-            self.trainer_function(random_retrainer, self.loss_class(), self.retrain_subsets, self.eval_subsets, retrain_epochs)
-            random_retrained_model = self.model_class()
-            random_retrained_model.load_state_dict(random_retrainer.get_retrained_params())
+            random_retrained_model = recover(random_reset_model, random_params, reset_reference)
             random_baseline_seconds = time.perf_counter() - random_start
         else:
-            logging.warning("No parameters to reset, skipping unlearning and retraining.")
             reset_model = self.trained_model
-            retrained_model = self.trained_model
             random_reset_model = self.trained_model
-            random_retrained_model = self.trained_model
             reset_params_percentage = 0.0
+            if recovery_scope == 'all' and retrain_epochs > 0:
+                # No-reset baseline: fine-tune every weight on retained data only.
+                recovery_start = time.perf_counter()
+                retrained_model = recover(self.trained_model, informative_params)
+                recovery_seconds = time.perf_counter() - recovery_start
+            else:
+                logging.warning("No parameters to reset, skipping unlearning and retraining.")
+                retrained_model = self.trained_model
+            # Without a reset there is no random comparator; share the recovered model.
+            random_retrained_model = retrained_model
 
         # Execute tests
         extra_results = {}
 
         extra_results['num_total_params'] = self.num_total_params
         extra_results['reset_strategy'] = reset_strategy
+        extra_results['recovery_scope'] = recovery_scope
+        extra_results['retrain_epochs'] = retrain_epochs
         extra_results['num_reset_per_tensor'] = {
             name: len(indices) for name, indices in informative_params.items()
         }
@@ -568,15 +680,20 @@ class _RevisedTest:
         
 
         evaluation_start = time.perf_counter()
-        if num_reset_params == 0:
-            model_keys = ('reset', 'retrained', 'random_reset', 'random_retrained')
-            eval_test_results = {key: self.init_eval_test_results['trained'] for key in model_keys}
-            eval_train_results = {key: self.init_eval_train_results['trained'] for key in model_keys}
-        else:
-            models = dict(reset=reset_model, retrained=retrained_model,
-                          random_reset=random_reset_model, random_retrained=random_retrained_model)
-            eval_test_results = {key: evaluate_model(model, self.test_dataset) for key, model in models.items()}
-            eval_train_results = {key: evaluate_model(model, self.train_dataset) for key, model in models.items()}
+        # Shared models (the unchanged original, or a no-reset fine-tune used for
+        # both arms) are evaluated once.
+        known_evaluations = {
+            id(self.trained_model): (self.init_eval_test_results['trained'],
+                                     self.init_eval_train_results['trained']),
+        }
+        eval_test_results, eval_train_results = {}, {}
+        for key, model in dict(reset=reset_model, retrained=retrained_model,
+                               random_reset=random_reset_model,
+                               random_retrained=random_retrained_model).items():
+            if id(model) not in known_evaluations:
+                known_evaluations[id(model)] = (evaluate_model(model, self.test_dataset),
+                                                evaluate_model(model, self.train_dataset))
+            eval_test_results[key], eval_train_results[key] = known_evaluations[id(model)]
         extra_results['evaluation_seconds'] = time.perf_counter() - evaluation_start
 
         lira_start = time.perf_counter()
@@ -678,7 +795,12 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
         run_init_params["_lira_fixed_eval_indices"] = lira_context["fixed_eval_indices"]
     test_instance = test_class(train_dataset, test_dataset, clients_subsets, model_class, loss_class, trainer_function, run_init_params, poisoned_backdoor_dataset, clean_backdoor_dataset)
 
+    # save_models=True also exports every recovered model; 'baseline' saves only
+    # the initialization, original and gold weights of each repetition.
     if arg['save_models']:
+        if hasattr(test_instance, 'initial_state_dict'):
+            torch.save(test_instance.initial_state_dict,
+                       os.path.join(test_iter_path, 'initial_model.pth'))
         torch.save(test_instance.trained_model.cpu().state_dict(),
                    os.path.join(test_iter_path, 'original_model.pth'))
         torch.save(test_instance.gold_retrain_model.cpu().state_dict(),
@@ -712,7 +834,7 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
     for i, test_params_dict in enumerate(tqdm(test_params_dicts, desc=f"Unlearning tests", leave=False)):
         try:
             eval_test_result, eval_train_result, test_extra_result = test_instance.run_test(test_params_dict)
-            if arg['save_models']:
+            if arg['save_models'] and arg['save_models'] != 'baseline':
                 export_start = time.perf_counter()
                 torch.save(test_instance.last_retrained_model.cpu().state_dict(),
                            os.path.join(test_iter_path, f'recovered_case_{i}.pth'))

@@ -54,6 +54,16 @@ def summarize(rows, group_fields):
     return output
 
 
+CASE_FIELDS = ["case_index", "reset_strategy", "recovery_scope", "retrain_epochs"]
+
+
+def max_eigenvalue(matrix):
+    if matrix is None:
+        return None
+    matrix = np.asarray(matrix, dtype=np.float64)
+    return float(np.linalg.eigvalsh((matrix + matrix.T) / 2).max()) if matrix.size else None
+
+
 def save_csv(output, name, rows):
     with (output / name).open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
@@ -65,6 +75,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, default=INPUT)
     parser.add_argument('--output', type=Path, default=OUTPUT)
+    parser.add_argument('--allow-inefficient', action='store_true',
+                        help='Report, but do not fail on, deletions costing as much as gold retraining')
     args = parser.parse_args()
     source, output = args.input, args.output
     output.mkdir(parents=True, exist_ok=True)
@@ -84,11 +96,12 @@ def main():
     global_variance = bool(configuration.get("lira_global_variance", True))
     mean_in, std_in = fit_gaussian(scores, shadow_membership, global_variance)
     mean_out, std_out = fit_gaussian(scores, ~shadow_membership, global_variance)
-    preferential = configuration.get("distribution_type") == "preferential_class"
-    target_classes = np.unique(labels["train"][target]) if preferential else []
-    other_classes = np.setdiff1d(np.unique(labels["test"]), target_classes) if preferential else []
-    class_labels = np.concatenate((target_classes, other_classes)) if preferential else []
-    candidate_labels = np.concatenate((labels["train"], labels["test"]))[candidates] if preferential else None
+    # Class-restricted audits matter whenever the target's class mix differs from nonmembers'.
+    per_class = configuration.get("distribution_type") in {"preferential_class", "preferential_mix", "dirichlet"}
+    target_classes = np.unique(labels["train"][target]) if per_class else []
+    other_classes = np.setdiff1d(np.unique(labels["test"]), target_classes) if per_class else []
+    class_labels = np.concatenate((target_classes, other_classes)) if per_class else []
+    candidate_labels = np.concatenate((labels["train"], labels["test"]))[candidates] if per_class else None
 
     def privacy_metrics(values, selected=None):
         values = np.asarray(values, dtype=np.float64)
@@ -139,11 +152,13 @@ def main():
         assert set(target).issubset(set(training))
         assert not set(candidates[~membership]).intersection(training)
         extra = read_pickle(directory / "extra_results.pkl")
-        if configuration.get('save_models'):
+        save_models = configuration.get('save_models')
+        if save_models:
             assert (directory / 'original_model.pth').is_file()
             assert (directory / 'gold_model.pth').is_file()
-            assert all((directory / f'recovered_case_{i}.pth').is_file()
-                       for i in range(len(cases)))
+            if save_models != 'baseline':
+                assert all((directory / f'recovered_case_{i}.pth').is_file()
+                           for i in range(len(cases)))
         stage = read_pickle(directory / "stage_timings.pkl")
         initial_test = read_pickle(directory / "initial_eval_test_results.pkl")
         initial_train = read_pickle(directory / "initial_eval_train_results.pkl")
@@ -175,13 +190,19 @@ def main():
 
         for name in initial_test:
             model = "original" if name == "trained" else "gold"
-            base = {"repetition": repetition, "case_index": -1, "model": model, "score_mass_pct": 0.0, "parameters_reset_pct": 0.0}
+            base = {"repetition": repetition, "case_index": -1, "reset_strategy": "none",
+                    "recovery_scope": "none", "retrain_epochs": 0, "model": model,
+                    "score_mass_pct": 0.0, "parameters_reset_pct": 0.0}
             utility_rows.append({**base, **utility_metrics(initial_test[name], initial_train[name])})
             privacy_rows.append({**base, **privacy_metrics(initial_lira[name])})
             record_per_class(base, initial_test[name], initial_train[name], initial_lira[name])
 
         for case_index, case in enumerate(cases):
-            base = {"repetition": repetition, "case_index": case_index, "score_mass_pct": case["unlearning_percentage"], "parameters_reset_pct": extra["reset_params_percentage"][case_index]}
+            base = {"repetition": repetition, "case_index": case_index,
+                    "reset_strategy": case.get("reset_strategy", "initial"),
+                    "recovery_scope": case.get("recovery_scope", "selected"),
+                    "retrain_epochs": case.get("retrain_epochs"),
+                    "score_mass_pct": case["unlearning_percentage"], "parameters_reset_pct": extra["reset_params_percentage"][case_index]}
             for name in ("reset", "retrained", "random_reset", "random_retrained"):
                 test = {field: eval_test[name + "__" + field][case_index] for field in ("pred", "loss")}
                 train = {field: eval_train[name + "__" + field][case_index] for field in ("pred", "loss")}
@@ -190,7 +211,11 @@ def main():
                 if lira_values is not None:
                     privacy_rows.append({**base, "model": name, **privacy_metrics(lira_values)})
                 record_per_class({**base, "model": name}, test, train, lira_values)
-                if case_index == 0:
+                # Without a reset, reset arms (and arms with no recovery) are the original model.
+                unchanged = extra["reset_params_percentage"][case_index] == 0 and (
+                    name in ("reset", "random_reset") or base["recovery_scope"] == "selected"
+                    or not base["retrain_epochs"])
+                if unchanged:
                     assert np.array_equal(test["pred"], initial_test["trained"]["pred"])
                     assert np.array_equal(train["pred"], initial_train["trained"]["pred"])
             timing_rows.append({
@@ -206,29 +231,58 @@ def main():
                 "evaluation_seconds": extra["evaluation_seconds"][case_index],
                 "lira_evaluation_seconds": extra["lira_evaluation_seconds"][case_index],
             })
+        if diagnostics.get('information_method') == 'diagonal':
+            diagnostic_rows.append({
+                'repetition': repetition,
+                'hessian_method': diagnostics['hessian_method'],
+                'stochastic_correction': diagnostics['stochastic_correction'],
+                'diagonal_population': diagnostics.get('diagonal_population', 'clients'),
+                'full_samples': diagnostics['full_samples'],
+                'target_samples': diagnostics['target_samples'],
+                'score_seconds': stage['score_seconds'],
+                'gold_retraining_seconds': stage['gold_retraining_seconds'],
+            })
+            continue
         inner = diagnostics["diagnostics"]
         residuals = inner["retained_eigenpair_relative_residuals"]
+        control = inner.get("control") or {}
         diagnostic_rows.append({
             "repetition": repetition,
+            "spectral_subspace": diagnostics.get("spectral_subspace", "top_curvature"),
+            "curvature_backend": inner.get("curvature_backend"),
             "retained_rank": inner["retained_rank"],
             "converged": inner["subspace"]["converged"],
             "eigenpair_residual_min": min(residuals),
             "eigenpair_residual_max": max(residuals),
             "sum_rule_relative_error": inner["sum_rule_relative_error"],
+            # Largest eigenvalue of B: about 1 means no target-dominated direction;
+            # the bound 1/alpha_T needs PSD curvature with the target inside H's sample.
+            "max_whitened_target_eigenvalue": max_eigenvalue(diagnostics.get("whitened_target")),
+            "relative_curvature_bound": inner.get("relative_curvature_bound"),
+            "damping": inner.get("damping"),
+            "core_trace": inner.get("core_trace"),
+            "control_max_whitened_target_eigenvalue": max_eigenvalue(control.get("whitened_target")),
+            "control_core_trace": control.get("core_trace"),
+            "control_log_score_correlation": control.get("log_score_correlation"),
+            "control_top_set_overlap": control.get("top_set_overlap"),
+            "target_fraction": diagnostics.get("target_fraction"),
             "full_samples": diagnostics["full_samples"],
             "target_samples": diagnostics["target_samples"],
             "score_seconds": stage["score_seconds"],
+            # The eigenbasis is target-independent; only the remainder is per request.
+            "subspace_seconds": inner["subspace"].get("elapsed_seconds"),
+            "control_seconds": control.get("elapsed_seconds"),
             "gold_retraining_seconds": stage["gold_retraining_seconds"],
         })
 
     for name, rows in [("utility", utility_rows), ("privacy", privacy_rows), ("timings", timing_rows)]:
         save_csv(output, "cifar_" + name + "_per_run.csv", rows)
-        groups = ["case_index", "model"] if name != "timings" else ["case_index"]
+        groups = CASE_FIELDS + ["model"] if name != "timings" else CASE_FIELDS
         save_csv(output, "cifar_" + name + "_summary.csv", summarize(rows, groups))
-    if preferential:
+    if per_class:
         save_csv(output, "cifar_per_class_per_run.csv", per_class_rows)
         save_csv(output, "cifar_per_class_summary.csv",
-                 summarize(per_class_rows, ["case_index", "model", "class_label"]))
+                 summarize(per_class_rows, CASE_FIELDS + ["model", "class_label"]))
     save_csv(output, "cifar_score_diagnostics.csv", diagnostic_rows)
     efficiency_pass = all(
         np.isfinite(row['cost_fraction_of_gold']) and
@@ -240,7 +294,7 @@ def main():
         "lira_case_indices": [i for i, case in enumerate(cases) if "LiRA" in case.get("tests", [])],
         "efficiency_pass": efficiency_pass,
         "checks_passed": ["no missing sweep cases", "LiRA cases match the configuration in each repetition", "finite stored outputs", "zero-reset predictions equal original", "LiRA positives are all and only target records", "LiRA negatives excluded from original training", "training, retained, target and heldout partitions are nonempty and disjoint where required"],
-        "checkpoints_saved": bool(configuration.get('save_models')),
+        "checkpoints_saved": configuration.get('save_models') or False,
         "split_sizes": {
             "original_training": int(len(training)),
             "retained_training": int(len(retained)),
@@ -250,14 +304,14 @@ def main():
         "notes": [
             "All *_pct values are percentages; AUC/TPR use fractions.",
             "Standard deviations use population convention (ddof=0) over the configured repetitions.",
-            "retrained means recovery of only reset coordinates for the case's configured epochs; gold means full training from fresh initialization.",
+            "retrained means recovery for the case's configured epochs: only reset coordinates when recovery_scope is selected, every weight when it is all (without a reset, all is fine-tuning on retained data); gold means full training from fresh initialization.",
             "Artifact field loss is true-class logit margin, not cross-entropy; CE cannot be reconstructed from it.",
             "Prediction disagreement from gold is a behavioral proxy, not parameter or probability distance.",
-            "Model checkpoints are present only when the suite was run with save_models=True; logit margins are not full logits.",
+            "Model checkpoints are present only when the suite was run with save_models=True (also every recovered model) or 'baseline' (initialization, original and gold); logit margins are not full logits.",
             "Single-deletion cost includes score construction, parameter selection, reset/recovery and saved checkpoint export when enabled; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
             f"LiRA uses {len(scores)} shared shadows with balanced IN/OUT membership per record and {'globally pooled' if global_variance else 'per-record'} IN/OUT variances.",
             "Retained heldout predictions cover all original-training exclusions, including LiRA candidate nonmembers removed from validation.",
-            "Preferential-client runs report test accuracy by class, plus forget accuracy and LiRA AUC/TPR where the target client has records of that class.",
+            "Preferential, preferential-mix and Dirichlet runs report test accuracy by class, plus forget accuracy and LiRA AUC/TPR where the target client has records of that class.",
         ],
         "lira_candidate_members": int(membership.sum()),
         "lira_candidate_nonmembers": int((~membership).sum()),
@@ -271,7 +325,7 @@ def main():
     }
     (output / "cifar_audit_metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(json.dumps(metadata, indent=2))
-    if not efficiency_pass:
+    if not efficiency_pass and not args.allow_inefficient:
         raise RuntimeError('At least one deletion cost as much as gold retraining; see timing CSV')
 
 

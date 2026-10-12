@@ -39,7 +39,7 @@ def synchronized_time(device):
 
 
 def recover(model, train_loader, validation_loader, *, epochs, learning_rate,
-            momentum, device, deadline, batchnorm_mode='train'):
+            momentum, device, deadline, batchnorm_mode='train', on_epoch=None):
     """Keep optimizer momentum across epochs; validation never uses targets."""
     optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=momentum)
     history = []
@@ -52,7 +52,8 @@ def recover(model, train_loader, validation_loader, *, epochs, learning_rate,
         check_budget()
         model.train()
         if batchnorm_mode == 'frozen':
-            for module in model.inner_model['model'].modules():
+            template = model.inner_model['model'] if isinstance(model, UnlearnNet) else model
+            for module in template.modules():
                 if isinstance(module, nn.modules.batchnorm._BatchNorm):
                     module.eval()
         total_loss, total = 0.0, 0
@@ -79,6 +80,8 @@ def recover(model, train_loader, validation_loader, *, epochs, learning_rate,
         history.append(dict(epoch=epoch + 1, train_cross_entropy=total_loss / total,
                             validation_cross_entropy=val_loss / val_total,
                             validation_accuracy=val_correct / val_total))
+        if on_epoch is not None:
+            on_epoch(epoch + 1, model, history[-1])
     return history
 
 

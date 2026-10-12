@@ -100,6 +100,10 @@ def bootstrap(source_suite, repetition, output, seed=2026, batch_size=128):
     shutil.copy2(source_suite / 'labels.pkl', suite / 'labels.pkl')
     if bank_file.exists():
         shutil.copy2(bank_file, suite / 'lira_shadow_bank.npz')
+        previous_lira = source_iteration / 'initial_lira_results.pkl'
+        if previous_lira.exists():
+            np.save(iteration / 'previous_gold_lira_scores.npy',
+                    read_pickle(previous_lira)['shadow_out'])
     # The ablation reads these indices; old eigenvalues/scores are intentionally
     # omitted because they were computed for a different original model.
     write_pickle(iteration / 'score_diagnostics.pkl', {

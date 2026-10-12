@@ -150,23 +150,41 @@ def get_datasets(init_params_dict):
     return train_dataset, test_dataset
 
 
+def preferential_class_distribution(num_clients, num_classes):
+    if num_clients > num_classes:
+        raise ValueError(
+            "Number of clients must be less than or equal to number of classes for preferential_class distribution"
+        )
+    num_common_classes = num_classes - num_clients
+    p_common = 1 / (num_common_classes + num_clients)
+    p_preferred = p_common * num_clients
+    class_distribution = np.zeros((num_clients, num_classes))
+    for i in range(num_clients):
+        for j in range(num_common_classes):
+            class_distribution[i, j] = p_common
+        class_distribution[i, num_common_classes + i] = p_preferred
+    return class_distribution
+
+
 def get_clients_subsets(dataset, init_params_dict):
     num_clients = init_params_dict["num_clients"]
     num_classes = init_params_dict["num_classes"]
     distribution_type = init_params_dict["distribution_type"]
     if distribution_type == "preferential_class":
-        if num_clients > num_classes:
-            raise ValueError(
-                "Number of clients must be less than or equal to number of classes for preferential_class distribution"
-            )
-        num_common_classes = num_classes - num_clients
-        p_common = 1 / (num_common_classes + num_clients)
-        p_preferred = p_common * num_clients
-        class_distribution = np.zeros((num_clients, num_classes))
-        for i in range(num_clients):
-            for j in range(num_common_classes):
-                class_distribution[i, j] = p_common
-            class_distribution[i, num_common_classes + i] = p_preferred
+        return split_dataset_by_class_distribution(
+            dataset, preferential_class_distribution(num_clients, num_classes)
+        )
+    elif distribution_type == "preferential_mix":
+        # Strength 0 is the stratified uniform split and 1 is preferential_class.
+        # With balanced labels every client keeps the same size at every strength.
+        strength = init_params_dict["preferential_strength"]
+        if isinstance(strength, bool) or not 0 <= strength <= 1:
+            raise ValueError("preferential_strength must be between 0 and 1")
+        uniform = np.ones((num_clients, num_classes)) / num_classes
+        class_distribution = (
+            strength * preferential_class_distribution(num_clients, num_classes)
+            + (1 - strength) * uniform
+        )
         return split_dataset_by_class_distribution(dataset, class_distribution)
     elif distribution_type == "categorical":
         if num_clients != num_classes:

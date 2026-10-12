@@ -170,3 +170,16 @@ def find_random_params_matching(information, selected_params):
         selected = torch.randperm(size, device=groups[0][1].device)[:count]
         random_params.update(_coordinates(groups, selected))
     return random_params
+
+
+def find_informative_params_matching(information, selected_params):
+    """Select the highest scores in each layer at a reference mask's count."""
+    result = {}
+    for groups in _layer_groups({name: information[name] for name in selected_params}):
+        count = sum(len(selected_params[name]) for name, _ in groups)
+        scores = torch.cat([value.detach().reshape(-1) for _, value in groups])
+        if count > scores.numel():
+            raise ValueError("Selected parameter count exceeds layer size.")
+        _, order = _sorted_scores(scores)
+        result.update(_coordinates(groups, order[:count]))
+    return result

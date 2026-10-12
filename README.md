@@ -124,13 +124,62 @@ NUM_TESTS=3 LIRA_SHADOW_MODELS=8 NUM_POWER_ITERS=3 python -m experiments.configs
 NUM_TESTS=1 LIRA_SHADOW_MODELS=0 NUM_POWER_ITERS=2 python -m experiments.configs.spectral_wip
 ```
 
-For a CIFAR-10 random-client sweep, submit `sbatch queue.sh` from the repository
-root. The launcher runs a GPU Hessian smoke check, then uses
-`experiments.configs.cifar_full_validation` with 20 training repetitions and
-40 shared LiRA shadows (20 IN and 20 OUT per record). It audits all ten score
-masses and writes CSV summaries under `stat_tests/CIFAR/random_job_<jobid>/summary`.
-The score uses rank 20 and fixed 2,048-record full and target curvature samples;
-these are sampled approximations. Recovery ablations use `queue_ablation.sh`.
+## TMLR experiment suites
+
+`queue.sh` runs the experiments for the core-score paper as a Slurm array, one
+suite of `experiments/configs/tmlr_paper.py` per task (`python -m
+experiments.configs.tmlr_paper --list` prints the indices). Every suite uses five
+clients, 20 original/gold pairs, a 64-shadow online-LiRA bank and the same seeds,
+so core-score and diagonal suites share splits:
+
+- CIFAR-10 `preferential_mix` sweep, strength 1 (preferential) to 0 (stratified
+  IID), plus Dirichlet(0.8); FashionMNIST at strengths 1, 0.5 and 0. Strength is the
+  target's share of its exclusive class (20% to 100%); unlike the Dirichlet
+  partitioner, every strength keeps all training records;
+- the diagonal TIS on matched splits, scored on trained records only
+  (`diagonal_population: training`) without stochastic correction;
+- rank, solver-iteration and curvature-sample sensitivity, and recovery budget;
+- the core-optimal subspace (`spectral_subspace: generalized`) at strengths 1, 0.5
+  and 0, its damping and rank ablations on the IID split, and top-curvature scores
+  on the same Gauss-Newton curvature (`spectral_curvature_backend: ggn`).
+
+For a fixed rank, the core `Tr(B^2)` is maximized by the top generalized
+eigenvectors of `(H_T, H)`, the directions with the largest relative curvature
+`mu = v^T H_T v / v^T H v`, not by the top eigenvectors of `H`. The generalized
+option estimates `H = (1 - a) H_R + a H_T` from a retained sample plus the target
+sample itself (`a` is the target's training fraction), so with Gauss-Newton
+curvature `0 <= mu <= 1/a` and `a * mu` is the target's curvature share. Block
+LOBPCG solves the pencil `(H_T, H + delta I)` with curvature products only, for at
+most `spectral_num_power_iters` iterations. In near-interpolating networks many
+directions sit at the bound; `delta = spectral_damping * lambda_max(H)` acts as a
+prior precision that ranks them by curvature. The control sample is drawn outside
+`H`'s retained sample. `cifar_score_diagnostics.csv` reports the largest eigenvalue
+of `B` against `relative_curvature_bound`.
+
+Main suites sweep 14 score masses under both reset values (`initial`, `zero`, always
+the same for the score and random arms), add full-weight recovery
+(`recovery_scope: all`) at six masses, and a no-reset fine-tuning baseline. Core
+suites also score an equal-size sample of retained records in the same basis; the
+log-score correlation and top-decile overlap with the target score measure how
+target-specific the ranking is. Checkpoints of the initialization, original and
+gold models are saved (`save_models: baseline`).
+
+Download the datasets once on a login node with `python -m
+experiments.configs.tmlr_paper --download`, commit the code, then submit
+`sbatch queue.sh` (or e.g. `sbatch --array=0-5 queue.sh`). Results go to
+`stat_tests/TMLR/<suite>_job_<jobid>`, with `suite.json`, the source revision and
+diff, and CSV summaries in `summary/`. `cifar_score_diagnostics.csv` reports the
+largest eigenvalue of B, the control agreement and the eigensolver time separately
+from the per-request time, because the eigenbasis does not depend on the target.
+
+The earlier diagonal CIFAR-10 random-client sweeps (stochastic correction off and
+on, 10 clients, all client records) remain available as
+`sbatch queue_diagonal_validation.sh`; their results are under
+`stat_tests/CIFAR/diagonal_stochastic_<off|on>_job_<jobid>`.
+
+The spectral benchmark remains available through
+`python -m experiments.configs.cifar_full_validation --output <new-directory>`.
+It uses rank 20 and fixed 2,048-record full and target curvature samples.
 
 ## Checks before a long run
 

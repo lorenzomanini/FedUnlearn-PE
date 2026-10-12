@@ -8,7 +8,7 @@ class LegacyInitParamsDict(TypedDict):
     num_clients: int
     num_classes: int
     distribution_type: Literal[
-        "preferential_class", "uniform", "dirichlet", "random", "categorical"
+        "preferential_class", "preferential_mix", "uniform", "dirichlet", "random", "categorical"
     ]
     model_name: Literal["simple_cnn", "resnet18"]
     loss_name: Literal["cross_entropy", "mse"]
@@ -43,6 +43,10 @@ class RevisedInitParamsDict(LegacyInitParamsDict):
     spectral_eigenvalue_rtol: NotRequired[float]
     spectral_power_tolerance: NotRequired[float]
     spectral_hmp_chunk_size: NotRequired[int]
+    spectral_control_target: NotRequired[bool]
+    preferential_strength: NotRequired[float]
+    dirichlet_alpha: NotRequired[float]
+    diagonal_population: NotRequired[Literal["clients", "training"]]
 
 
 class TestParamsDict(TypedDict):
@@ -51,6 +55,7 @@ class TestParamsDict(TypedDict):
     unlearning_percentage: float
     retrain_epochs: int
     reset_strategy: NotRequired[Literal["zero", "initial"]]
+    recovery_scope: NotRequired[Literal["selected", "all"]]
     tests: list[str]
     mia_classifier_types: list[Literal["nn", "logistic", "svm"]]
     whitelist: list[str]

@@ -23,3 +23,5 @@ tests/__pycache__/
 tests/*
 !tests/test_full_cifar_summary.py
 !tests/test_cifar_preferential_paper.py
+!tests/test_cifar_diagnosis.py
+!tests/test_tmlr_paper.py
