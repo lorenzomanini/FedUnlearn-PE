@@ -115,6 +115,11 @@ def fedavg_trainer(model, loss_fn, subsets, epochs, comm_tracker=None, init_para
     )
 
 
+def _fedavg_revised(model, loss_fn, train_subsets, val_subsets, epochs, init_params_dict=None):
+    """Module-level (picklable) adapter to the revised trainer signature."""
+    return fedavg_trainer(model, loss_fn, train_subsets, epochs, init_params_dict=init_params_dict)
+
+
 def get_trainer_function(init_params_dict):
     trainer_name = init_params_dict['trainer_name']
     if trainer_name == 'sgd':
@@ -124,7 +129,9 @@ def get_trainer_function(init_params_dict):
             init_params_dict['momentum'] = 0.9
         return functools.partial(simple_trainer, init_params_dict=init_params_dict)
     elif trainer_name == 'fedavg':
-        return functools.partial(fedavg_trainer, init_params_dict=init_params_dict)
+        # The revised runners call trainer(model, loss, train_subsets, val_subsets, epochs);
+        # fedavg_trainer takes (model, loss, subsets, epochs), so drop the validation sets.
+        return functools.partial(_fedavg_revised, init_params_dict=init_params_dict)
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
 

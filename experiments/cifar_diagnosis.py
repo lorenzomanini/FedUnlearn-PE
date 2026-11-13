@@ -1,9 +1,9 @@
 """Fixed-checkpoint CIFAR mask and recovery controls, using an existing LiRA bank.
 
 Research ablation: costs are reported, without the cheap-deletion budget cutoff.
-Run ``python -m experiments.cifar_diagnosis --help`` or submit queue_diagnosis.sh.
+Run ``python -m experiments.cifar_diagnosis --help`` for launch options.
 Use --reuse-diagnosis JOB_DIR for the four full-weight recovery controls without
-training a new original or recomputing curvature (queue_recovery_controls.sh).
+training a new original or recomputing curvature.
 """
 
 import argparse

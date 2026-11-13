@@ -71,7 +71,11 @@ def revised_simple_trainer(
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_dataset = concatenate_subsets(train_subsets)
-    dataloader = DataLoader(train_dataset, train_batch_size, shuffle=True)
+    # A ragged final batch of a few records corrupts BatchNorm running statistics
+    # (seen at preferential strength 0.75: a 2-record last batch). Off by default so
+    # earlier suites stay reproducible; TMLR v2 suites set it.
+    dataloader = DataLoader(train_dataset, train_batch_size, shuffle=True,
+                            drop_last=bool(init_params_dict.get("drop_last", False)))
     val_dataloader = None
     if val_subsets:
         val_dataset = concatenate_subsets(val_subsets)

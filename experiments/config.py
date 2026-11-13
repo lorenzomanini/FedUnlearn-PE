@@ -4,11 +4,11 @@ from typing import Any, Literal, Mapping, NotRequired, TypedDict
 
 class LegacyInitParamsDict(TypedDict):
     test_name: str
-    dataset_name: Literal["mnist", "cifar10", "FashionMNIST", "cifar100"]
+    dataset_name: Literal["mnist", "cifar10", "FashionMNIST", "cifar100", "cifar100_superclass"]
     num_clients: int
     num_classes: int
     distribution_type: Literal[
-        "preferential_class", "preferential_mix", "uniform", "dirichlet", "random", "categorical"
+        "preferential_class", "preferential_mix", "uniform", "dirichlet", "random", "categorical", "fine_class"
     ]
     model_name: Literal["simple_cnn", "resnet18"]
     loss_name: Literal["cross_entropy", "mse"]
@@ -23,6 +23,8 @@ class LegacyInitParamsDict(TypedDict):
     local_epochs: int
     participation_rate: float
     lr: float
+    target_fine_class: NotRequired[int]
+    download: NotRequired[bool]
 
 
 class RevisedInitParamsDict(LegacyInitParamsDict):
@@ -32,7 +34,8 @@ class RevisedInitParamsDict(LegacyInitParamsDict):
     lira_seed: NotRequired[int]
     lira_global_variance: NotRequired[bool]
     repetition_seed: NotRequired[int]
-    save_models: NotRequired[bool]
+    save_models: NotRequired[bool | Literal["baseline"]]
+    checkpoint_dir: NotRequired[str]
     spectral_rank: NotRequired[int]
     spectral_num_power_iters: NotRequired[int]
     spectral_max_samples: NotRequired[int | None]

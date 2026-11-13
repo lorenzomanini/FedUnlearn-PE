@@ -109,6 +109,11 @@ def fedavg_trainer(model, loss_fn, subsets, epochs, comm_tracker=None, init_para
     )
 
 
+def _fedavg_revised(model, loss_fn, train_subsets, val_subsets, epochs, init_params_dict=None):
+    """Module-level (picklable) adapter to the revised trainer signature."""
+    return fedavg_trainer(model, loss_fn, train_subsets, epochs, init_params_dict=init_params_dict)
+
+
 def get_trainer_function(init_params_dict):
     trainer_name = init_params_dict['trainer_name']
     if trainer_name == 'sgd':
@@ -118,7 +123,9 @@ def get_trainer_function(init_params_dict):
             init_params_dict['momentum'] = 0.9
         return functools.partial(simple_trainer, init_params_dict=init_params_dict)
     elif trainer_name == 'fedavg':
-        return functools.partial(fedavg_trainer, init_params_dict=init_params_dict)
+        # The revised runners call trainer(model, loss, train_subsets, val_subsets, epochs);
+        # fedavg_trainer takes (model, loss, subsets, epochs), so drop the validation sets.
+        return functools.partial(_fedavg_revised, init_params_dict=init_params_dict)
     else:
         raise ValueError(f"Unsupported trainer name: {trainer_name}")
 
@@ -797,14 +804,17 @@ def _run_tests_iter(iter, arg, test_class, device, filter_error_results=False, p
 
     # save_models=True also exports every recovered model; 'baseline' saves only
     # the initialization, original and gold weights of each repetition.
-    if arg['save_models']:
+    checkpoint_dir = init_params_dict.get('checkpoint_dir')
+    if arg['save_models'] or checkpoint_dir:
+        model_path = os.path.join(checkpoint_dir, f'test_{iter}') if checkpoint_dir else test_iter_path
+        os.makedirs(model_path, exist_ok=True)
         if hasattr(test_instance, 'initial_state_dict'):
             torch.save(test_instance.initial_state_dict,
-                       os.path.join(test_iter_path, 'initial_model.pth'))
+                       os.path.join(model_path, 'initial_model.pth'))
         torch.save(test_instance.trained_model.cpu().state_dict(),
-                   os.path.join(test_iter_path, 'original_model.pth'))
+                   os.path.join(model_path, 'original_model.pth'))
         torch.save(test_instance.gold_retrain_model.cpu().state_dict(),
-                   os.path.join(test_iter_path, 'gold_model.pth'))
+                   os.path.join(model_path, 'gold_model.pth'))
 
     if lira_context is not None:
         test_instance.configure_lira(
@@ -904,6 +914,7 @@ def _run_repeated_tests(
     suite_start = time.perf_counter()
     suite_timings = {'lira_shadow_training_seconds': 0.0}
     init_params_dict = init_params_dict.copy()
+    init_params_dict['save_models'] = save_models
     init_params_dict.setdefault("num_shadow_models", 8)
     init_params_dict.setdefault("lira_seed", 2026)
     init_params_dict.setdefault("lira_global_variance", True)

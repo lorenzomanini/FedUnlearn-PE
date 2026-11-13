@@ -5,7 +5,7 @@ target client 0 once per pair and sweeps the reset score mass. Each case evaluat
 reset model, its recovery and a layer-matched random reset under the same reset value
 and recovery scope; one 64-shadow online-LiRA bank audits every case of the suite.
 
-Suites (one Slurm array task each; queue.sh runs them all):
+Suites (select one with --suite):
   1. heterogeneity sweep on CIFAR-10, from IID (strength 0) to preferential (1), and
      the arXiv Dirichlet(0.8) split;
   2. the same sweep at three strengths on FashionMNIST;
@@ -98,7 +98,7 @@ def base_config(dataset_name):
         'target_client': 0,
         'num_tests': 20,
         'repetition_seed': 3000,
-        'save_models': 'baseline',
+        'save_models': False,
         'num_shadow_models': 64,
         'lira_seed': 2026,
         'lira_global_variance': True,
@@ -289,6 +289,11 @@ def main():
     parser.add_argument('--smoke', action='store_true', help='check data and the scoring path, then exit')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--output', type=Path, help='parent directory; results go to OUTPUT/<suite>')
+    storage = parser.add_mutually_exclusive_group()
+    storage.add_argument('--save-models', action='store_true',
+                         help='also keep initialization, original and gold checkpoints')
+    storage.add_argument('--checkpoint-dir', type=Path,
+                         help='write temporary baseline checkpoints here for in-job rescoring')
     args = parser.parse_args()
     if args.list:
         for index, (name, suite) in enumerate(SUITES.items()):
@@ -304,6 +309,9 @@ def main():
     if args.suite is None:
         parser.error('--suite is required')
     name = resolve(args.suite)
+    SUITES[name]['config']['save_models'] = 'baseline' if args.save_models else False
+    if args.checkpoint_dir is not None:
+        SUITES[name]['config']['checkpoint_dir'] = str(args.checkpoint_dir)
     if args.describe:
         print(json.dumps({'suite': name, **SUITES[name]}, indent=2))
     elif args.smoke:

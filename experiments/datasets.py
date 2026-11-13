@@ -1,7 +1,51 @@
+from numbers import Integral
+from pathlib import Path
+import pickle
+
 import numpy as np
 import torch
 
 from fisherunlearn.data.partition import split_dataset_by_class_distribution
+
+
+def _use_cifar100_superclasses(dataset, train):
+    """Keep torchvision's image order and expose the official coarse labels."""
+    folder = Path(dataset.root) / dataset.base_folder
+    with (folder / ("train" if train else "test")).open("rb") as stream:
+        labels = pickle.load(stream, encoding="latin1")
+    with (folder / "meta").open("rb") as stream:
+        metadata = pickle.load(stream, encoding="latin1")
+    fine = np.asarray(labels["fine_labels"])
+    coarse = np.asarray(labels["coarse_labels"])
+    fine_classes = metadata["fine_label_names"]
+    coarse_classes = metadata["coarse_label_names"]
+    if (
+        fine.shape != (len(dataset),)
+        or coarse.shape != fine.shape
+        or not np.array_equal(fine, np.asarray(dataset.targets))
+        or list(dataset.classes) != fine_classes
+        or len(fine_classes) != 100
+        or len(coarse_classes) != 20
+        or not np.array_equal(np.unique(fine), np.arange(100))
+        or not np.array_equal(np.unique(coarse), np.arange(20))
+    ):
+        raise ValueError("CIFAR-100 coarse labels must align with all 100 fine classes")
+    fine_to_coarse = []
+    for label in range(100):
+        parents = np.unique(coarse[fine == label])
+        if len(parents) != 1:
+            raise ValueError("Each CIFAR-100 fine class must have exactly one superclass")
+        fine_to_coarse.append(int(parents[0]))
+    if not np.all(np.bincount(fine_to_coarse, minlength=20) == 5):
+        raise ValueError("Each CIFAR-100 superclass must contain five fine classes")
+    dataset.fine_targets = fine.tolist()
+    dataset.fine_classes = list(fine_classes)
+    dataset.fine_class_to_idx = {name: index for index, name in enumerate(fine_classes)}
+    dataset.fine_to_coarse = fine_to_coarse
+    dataset.targets = coarse.tolist()
+    dataset.classes = list(coarse_classes)
+    dataset.coarse_classes = list(coarse_classes)
+    dataset.class_to_idx = {name: index for index, name in enumerate(coarse_classes)}
 
 
 def get_datasets(init_params_dict):
@@ -61,7 +105,7 @@ def get_datasets(init_params_dict):
         test_dataset = CIFAR10(
             root="./data", train=False, download=True, transform=transform
         )
-    elif dataset_name == "cifar100":
+    elif dataset_name in ("cifar100", "cifar100_superclass"):
         from torchvision import transforms
         from torchvision.datasets import CIFAR100
 
@@ -87,11 +131,23 @@ def get_datasets(init_params_dict):
         else:
             raise ValueError("Unsupported model name for CIFAR100 dataset")
         train_dataset = CIFAR100(
-            root="./data", train=True, download=True, transform=transform
+            root="./data", train=True, download=init_params_dict.get("download", True),
+            transform=transform
         )
         test_dataset = CIFAR100(
-            root="./data", train=False, download=True, transform=transform
+            root="./data", train=False, download=init_params_dict.get("download", True),
+            transform=transform
         )
+        if dataset_name == "cifar100_superclass":
+            _use_cifar100_superclasses(train_dataset, train=True)
+            _use_cifar100_superclasses(test_dataset, train=False)
+            if (
+                train_dataset.fine_to_coarse != test_dataset.fine_to_coarse
+                or train_dataset.classes != test_dataset.classes
+                or train_dataset.fine_classes != test_dataset.fine_classes
+            ):
+                raise ValueError("CIFAR-100 train and test superclass metadata must agree")
+            init_params_dict["num_classes"] = 20
     elif dataset_name == "FashionMNIST":
         from torchvision import transforms
         from torchvision.datasets import FashionMNIST
@@ -170,7 +226,28 @@ def get_clients_subsets(dataset, init_params_dict):
     num_clients = init_params_dict["num_clients"]
     num_classes = init_params_dict["num_classes"]
     distribution_type = init_params_dict["distribution_type"]
-    if distribution_type == "preferential_class":
+    if distribution_type == "fine_class":
+        if not hasattr(dataset, "fine_targets") or not hasattr(dataset, "fine_classes"):
+            raise ValueError("fine_class distribution requires CIFAR-100 superclass labels")
+        if isinstance(num_clients, bool) or not isinstance(num_clients, Integral) or num_clients < 2:
+            raise ValueError("fine_class distribution requires at least two clients")
+        target = init_params_dict["target_fine_class"]
+        if (
+            isinstance(target, bool) or not isinstance(target, Integral)
+            or not 0 <= target < len(dataset.fine_classes)
+        ):
+            raise ValueError("target_fine_class must be an integer fine-class ID")
+        fine = np.asarray(dataset.fine_targets)
+        if fine.shape != (len(dataset),):
+            raise ValueError("fine_targets must align with the dataset")
+        target_indices = np.flatnonzero(fine == target)
+        retained_indices = np.flatnonzero(fine != target)
+        if not len(target_indices) or len(retained_indices) < num_clients - 1:
+            raise ValueError("fine_class distribution requires a nonempty target and retained clients")
+        np.random.shuffle(retained_indices)
+        indices = [target_indices, *np.array_split(retained_indices, num_clients - 1)]
+        return [torch.utils.data.Subset(dataset, part.tolist()) for part in indices]
+    elif distribution_type == "preferential_class":
         return split_dataset_by_class_distribution(
             dataset, preferential_class_distribution(num_clients, num_classes)
         )

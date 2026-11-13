@@ -50,7 +50,7 @@ def build_config():
         'momentum': 0.9,
         'target_client': 0,
         'num_tests': NUM_REPETITIONS,
-        'save_models': True,
+        'save_models': False,
         'repetition_seed': 3000,
         'num_shadow_models': NUM_SHADOW_MODELS,
         'lira_seed': 2026,
@@ -70,6 +70,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True,
                         help='New job directory under stat_tests/CIFAR')
+    parser.add_argument('--save-models', action='store_true',
+                        help='also keep initialization, original and gold checkpoints')
     args = parser.parse_args()
     if args.output.exists():
         parser.error('--output already exists; choose a new directory')
@@ -79,7 +81,7 @@ def main():
     spectral_runner.set_batch_sizes(128, 128, 128, 128)
     spectral_runner.run_repeated_tests(
         build_config(), build_cases(), str(args.output),
-        num_workers=1, save_models=True, plot=False,
+        num_workers=1, save_models='baseline' if args.save_models else False, plot=False,
     )
 
 

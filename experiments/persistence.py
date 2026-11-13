@@ -36,7 +36,7 @@ def load_pickle(directory, basename):
 
 def dump_npz(directory, basename, values):
     with open(os.path.join(directory, basename), "wb") as stream:
-        np.savez(stream, **values)
+        np.savez_compressed(stream, **values)
 
 
 def load_npz(directory, basename):
