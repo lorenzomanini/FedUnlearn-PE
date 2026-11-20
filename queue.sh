@@ -5,23 +5,26 @@
 # KEEP_CHECKPOINTS=1 sbatch queue.sh keeps every *.pt (audit and compaction still run).
 # KEEP_SCORES=1 also keeps full per-coordinate scores as scores.npz (~165 MB per seed).
 #
-# Array map (Slurm starts tasks in index order, so the pilot controls go first):
+# Array map (Slurm starts tasks in index order):
 #   0-2    pilot seeds 3000-3002: controls on the existing job-38148587 checkpoints
 #          (c5 c1 c2 diagonal c4 at ranks 20/40/80), then audit, compact, delete *.pt.
-#   3-9    seeds 3003-3009, standard recipe: train; core, orange-swap, cross-superclass
+#          Completed in job 64858158; the pilot checkpoints are deleted, so the default
+#          array below starts at 3.
+#   3-14   seeds 3003-3014, standard recipe: train; core, orange-swap, cross-superclass
 #          swap, leverage and random arms; controls c5 c1 c2 diagonal c4 (ranks 40/80);
 #          audit, compact, delete *.pt.
-#   10-12  seeds 3003-3005, regularized recipe (augmentation + weight decay 5e-4):
+#   15-17  seeds 3003-3005, regularized recipe (augmentation + weight decay 5e-4):
 #          train; main arms; controls c5 c2; audit, compact, delete *.pt.
-# Rough GPU time per task: pilot 3-5 h; standard 6-9 h; regularized 3-4 h.
+# Rough GPU time per task: pilot 2 h on A100; standard 6-9 h; regularized 3-4 h.
 #
-# PRE-SPECIFIED PRIMARY CONTRAST, fixed 2026-11-13 before tasks 3-9 ran. Source of
+# PRE-SPECIFIED PRIMARY CONTRAST, fixed 2026-11-13; amended 2026-11-20 (seeds 3003-3009
+# -> 3003-3014, nothing else) before any confirmatory seed was trained. Source of
 # truth: PRIMARY_CONTRAST in experiments/configs/cifar100_within_class.py.
 #   endpoint  apple accuracy closure (NFS_TargetAcc, paper Eq. 55)
 #   contrast  core at 10% minus layer-matched random interpolated, within each seed,
 #             to core's retained test accuracy (random at 8/10/15/20/30/40%;
 #             no extrapolation: unbracketed seeds are excluded and reported)
-#   test      two-sided one-sample t-test over seeds 3003-3009 (standard recipe),
+#   test      two-sided one-sample t-test over seeds 3003-3014 (standard recipe),
 #             alpha 0.05; exact sign-flip test as a robustness check.
 #   Pilot seeds 3000-3002, the regularized runs and all other contrasts are descriptive.
 
@@ -35,22 +38,22 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=120G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-12%3
+#SBATCH --array=3-17%3
 #SBATCH --output=slurm-%x-%A_%a.out
 #SBATCH --error=slurm-%x-%A_%a.err
 
 set -euo pipefail
 
 PILOT_SEEDS=(3000 3001 3002)
-NEW_SEEDS=(3003 3004 3005 3006 3007 3008 3009)
+NEW_SEEDS=(3003 3004 3005 3006 3007 3008 3009 3010 3011 3012 3013 3014)
 REGULARIZED_SEEDS=(3003 3004 3005)
 PILOT_JOB="${PILOT_JOB:-38148587}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-stat_tests/CIFAR100_within_class}"
 REGULARIZED_ROOT="${REGULARIZED_ROOT:-stat_tests/CIFAR100_within_class_regularized}"
 MODULE="experiments.configs.cifar100_within_class"
 TASK="${SLURM_ARRAY_TASK_ID:?Submit as an array job; the header sets --array}"
-if [[ ! "${TASK}" =~ ^([0-9]|1[0-2])$ ]]; then
-    echo "Array index ${TASK} must be in 0-12." >&2
+if [[ ! "${TASK}" =~ ^([0-9]|1[0-7])$ ]]; then
+    echo "Array index ${TASK} must be in 0-17." >&2
     exit 2
 fi
 
@@ -93,7 +96,7 @@ import sklearn
 from experiments.configs.cifar100_within_class import (
     CONFIRMATORY_SEEDS, PILOT_SEEDS, PRIMARY_CONTRAST, REGULARIZED_SEEDS)
 assert torch.cuda.is_available(), 'PyTorch cannot access the allocated GPU'
-assert PILOT_SEEDS == (3000, 3001, 3002) and CONFIRMATORY_SEEDS == tuple(range(3003, 3010))
+assert PILOT_SEEDS == (3000, 3001, 3002) and CONFIRMATORY_SEEDS == tuple(range(3003, 3015))
 assert REGULARIZED_SEEDS == (3003, 3004, 3005)
 assert PRIMARY_CONTRAST['seeds'] == list(CONFIRMATORY_SEEDS), 'pre-specified seeds changed'
 PY
@@ -177,9 +180,9 @@ new_seed() {
 
 if (( TASK <= 2 )); then
     pilot_controls "${PILOT_SEEDS[TASK]}"
-elif (( TASK <= 9 )); then
+elif (( TASK <= 14 )); then
     new_seed standard "${NEW_SEEDS[TASK - 3]}" "${OUTPUT_ROOT}" \
         --stages c5 c1 c2 diagonal c4 --ranks 40 80
 else
-    new_seed regularized "${REGULARIZED_SEEDS[TASK - 10]}" "${REGULARIZED_ROOT}" --stages c5 c2
+    new_seed regularized "${REGULARIZED_SEEDS[TASK - 15]}" "${REGULARIZED_ROOT}" --stages c5 c2
 fi

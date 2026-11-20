@@ -9,10 +9,11 @@ import json
 from pathlib import Path
 
 
-SEEDS = tuple(range(3000, 3010))
+SEEDS = tuple(range(3000, 3015))
 # Pilot seeds were analysed before PRIMARY_CONTRAST was fixed: exploratory only.
 PILOT_SEEDS = (3000, 3001, 3002)
-CONFIRMATORY_SEEDS = tuple(range(3003, 3010))
+# 3003-3009 (n=7) until the 2026-11-20 amendment recorded in PRIMARY_CONTRAST.
+CONFIRMATORY_SEEDS = tuple(range(3003, 3015))
 REGULARIZED_SEEDS = (3003, 3004, 3005)
 CONFIG = {
     "dataset_name": "cifar100_superclass",
@@ -53,8 +54,9 @@ CONFIG = {
 # Scoring and evaluation always use un-augmented images.
 VARIANTS = {"standard": {}, "regularized": {"augment": True, "weight_decay": 5e-4}}
 
-# Pre-specified on 2026-11-13, before seeds 3003-3009 were trained. Do not edit
-# after launch; analysis/prepare_cifar100_tmlr.py reads this dictionary.
+# Pre-specified on 2026-11-13; amended once on 2026-11-20 (seed count only, see
+# "amendments"), before any confirmatory seed was trained. Do not edit after
+# confirmatory results exist; analysis/prepare_cifar100_tmlr.py reads this dictionary.
 PRIMARY_CONTRAST = {
     "endpoint": "target_accuracy_closure",
     "endpoint_definition": (
@@ -74,6 +76,15 @@ PRIMARY_CONTRAST = {
     "alpha": 0.05,
     "robustness_check": "exact two-sided sign-flip test on the same differences",
     "seeds": list(CONFIRMATORY_SEEDS),
+    "amendments": [{
+        "date": "2026-11-20",
+        "change": "confirmatory seeds 3003-3009 (n=7) -> 3003-3014 (n=12); nothing else",
+        "reason": ("power: pilot controls (job 64858158) gave per-seed SD 0.13 and a "
+                   "run-to-run noise floor of ~0.2 closure, so n=7 has ~0.45 power at the "
+                   "pilot mean +0.165 if SD=0.2; n=12 has ~0.74"),
+        "data_status": ("no confirmatory seed had produced results: job 64686505 tasks "
+                        "3-12 failed before training"),
+    }],
     "variant": "standard",
     "exploratory": ("pilot seeds 3000-3002, the regularized variant and every other "
                     "contrast are reported descriptively with t-intervals"),

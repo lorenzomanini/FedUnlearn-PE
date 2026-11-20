@@ -154,7 +154,9 @@ summaries, and audits that recovery moved only selected coordinates.
 The single confirmatory contrast is `PRIMARY_CONTRAST` in
 `experiments/configs/cifar100_within_class.py`: core at 10% minus layer-matched random
 interpolated, within each seed, to core's retained test accuracy; two-sided t-test over
-seeds 3003-3009. Pilot seeds 3000-3002 and every other contrast are descriptive.
+seeds 3003-3014 (amended from 3003-3009 on 2026-11-20 for power, before any confirmatory
+seed was trained; recorded in `PRIMARY_CONTRAST["amendments"]`). Pilot seeds 3000-3002
+and every other contrast are descriptive.
 
 ```bash
 # Once on a login node, where downloads are available:
@@ -163,10 +165,10 @@ python -m experiments.configs.cifar100_within_class --describe
 sbatch queue.sh
 ```
 
-`queue.sh` is a 13-task array. Tasks 0-2 run the follow-up controls on the pilot
-checkpoints of job 38148587; tasks 3-9 train seeds 3003-3009 and run every arm and
-control; tasks 10-12 run the regularized variant (main arms plus c2) for seeds
-3003-3005. Each task ends with `python -m experiments.within_class_finalize`, which
+`queue.sh` is an 18-task array. Tasks 0-2 ran the follow-up controls on the pilot
+checkpoints of job 38148587 (done in job 64858158; the default array now starts at 3);
+tasks 3-14 train seeds 3003-3014 and run every arm and control; tasks 15-17 run the
+regularized variant (main arms plus c2) for seeds 3003-3005. Each task ends with `python -m experiments.within_class_finalize`, which
 verifies the controls, audits every checkpoint, compacts masks and diagnostics and
 then deletes all `*.pt` files (`KEEP_CHECKPOINTS=1` keeps them). Each job directory
 also stores `source.diff` (untracked source files included) and `source.tar.gz`.
