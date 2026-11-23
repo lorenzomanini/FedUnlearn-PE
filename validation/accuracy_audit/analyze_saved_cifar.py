@@ -71,6 +71,22 @@ def save_csv(output, name, rows):
         writer.writerows(rows)
 
 
+def partition_groups(clients, training, target, population_size):
+    """Keep legacy heldout metrics, but distinguish unassigned Dirichlet records."""
+    assigned = np.concatenate([np.asarray(client, dtype=int) for client in clients])
+    assert len(assigned) == len(np.unique(assigned)), 'Client partitions overlap'
+    assert np.all((assigned >= 0) & (assigned < population_size))
+    assert set(training).issubset(set(assigned))
+    assert set(target).issubset(set(training))
+    return {
+        'retain_train': np.setdiff1d(training, target),
+        'forget': target,
+        'retain_heldout': np.setdiff1d(np.arange(population_size), training),
+        'assigned_retain_heldout': np.setdiff1d(assigned, training),
+        'unassigned': np.setdiff1d(np.arange(population_size), assigned),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, default=INPUT)
@@ -97,7 +113,8 @@ def main():
     mean_in, std_in = fit_gaussian(scores, shadow_membership, global_variance)
     mean_out, std_out = fit_gaussian(scores, ~shadow_membership, global_variance)
     # Class-restricted audits matter whenever the target's class mix differs from nonmembers'.
-    per_class = configuration.get("distribution_type") in {"preferential_class", "preferential_mix", "dirichlet"}
+    per_class = configuration.get("distribution_type") in {
+        "categorical", "random", "uniform", "preferential_class", "preferential_mix", "dirichlet"}
     target_classes = np.unique(labels["train"][target]) if per_class else []
     other_classes = np.setdiff1d(np.unique(labels["test"]), target_classes) if per_class else []
     class_labels = np.concatenate((target_classes, other_classes)) if per_class else []
@@ -132,6 +149,8 @@ def main():
                 "class_label": int(class_label),
                 "target_count": len(target_indices),
                 "nonmember_count": int(np.count_nonzero(~membership & candidate_mask)),
+                "fpr_resolution": 1 / int(np.count_nonzero(~membership & candidate_mask))
+                                  if np.any(~membership & candidate_mask) else None,
                 "forget_accuracy_pct": float(np.mean(train["pred"][target_indices] == class_label) * 100)
                                        if len(target_indices) else None,
                 "test_accuracy_pct": float(np.mean(test["pred"][test_mask] == class_label) * 100),
@@ -145,8 +164,8 @@ def main():
         directory = source / f"test_{repetition}"
         diagnostics = read_pickle(directory / "score_diagnostics.pkl")
         training = np.asarray(diagnostics["training_indices"])
-        retained = np.setdiff1d(training, target)
-        heldout = np.setdiff1d(np.arange(len(labels["train"])), training)
+        partitions = partition_groups(clients, training, target, len(labels["train"]))
+        retained, heldout = partitions['retain_train'], partitions['retain_heldout']
         assert len(training) == len(np.unique(training))
         assert len(retained) > 0 and len(target) > 0 and len(heldout) > 0
         assert set(target).issubset(set(training))
@@ -154,6 +173,7 @@ def main():
         extra = read_pickle(directory / "extra_results.pkl")
         save_models = configuration.get('save_models')
         if save_models:
+            assert (directory / 'initial_model.pth').is_file()
             assert (directory / 'original_model.pth').is_file()
             assert (directory / 'gold_model.pth').is_file()
             if save_models != 'baseline':
@@ -176,13 +196,21 @@ def main():
         def utility_metrics(test, train):
             assert test["pred"].shape == labels["test"].shape
             assert train["pred"].shape == labels["train"].shape
+            assert np.isfinite(test["pred"]).all() and np.isfinite(train["pred"]).all()
             assert np.isfinite(test["loss"]).all() and np.isfinite(train["loss"]).all()
             result = {
                 "test_accuracy_pct": float(np.mean(test["pred"] == labels["test"]) * 100),
                 "test_disagreement_from_gold_pct": float(np.mean(test["pred"] != initial_test["shadow_out"]["pred"]) * 100),
                 "test_true_class_margin": float(test["loss"].mean()),
             }
-            for name, indices in [("retain_train", retained), ("forget", target), ("retain_heldout", heldout)]:
+            if configuration.get('distribution_type') == 'categorical':
+                retain_test = ~np.isin(labels['test'], target_classes)
+                assert retain_test.any()
+                result['retained_class_test_accuracy_pct'] = float(np.mean(
+                    test['pred'][retain_test] == labels['test'][retain_test]) * 100)
+            for name, indices in partitions.items():
+                if not len(indices):
+                    continue
                 result[name + "_accuracy_pct"] = float(np.mean(train["pred"][indices] == labels["train"][indices]) * 100)
                 result[name + "_true_class_margin"] = float(train["loss"][indices].mean())
                 result[name + "_disagreement_from_gold_pct"] = float(np.mean(train["pred"][indices] != initial_train["shadow_out"]["pred"][indices]) * 100)
@@ -300,6 +328,9 @@ def main():
             "retained_training": int(len(retained)),
             "target": int(len(target)),
             "retained_heldout": int(len(heldout)),
+            "assigned_retained_heldout": int(len(partitions['assigned_retain_heldout'])),
+            "unassigned": int(len(partitions['unassigned'])),
+            "assigned_total": int(sum(len(client) for client in clients)),
         },
         "notes": [
             "All *_pct values are percentages; AUC/TPR use fractions.",
@@ -310,11 +341,13 @@ def main():
             "Model checkpoints are present only when the suite was run with save_models=True (also every recovered model) or 'baseline' (initialization, original and gold); logit margins are not full logits.",
             "Single-deletion cost includes score construction, parameter selection, reset/recovery and saved checkpoint export when enabled; excludes baseline training, random comparator, reporting evaluation and shared LiRA shadows.",
             f"LiRA uses {len(scores)} shared shadows with balanced IN/OUT membership per record and {'globally pooled' if global_variance else 'per-record'} IN/OUT variances.",
-            "Retained heldout predictions cover all original-training exclusions, including LiRA candidate nonmembers removed from validation.",
-            "Preferential, preferential-mix and Dirichlet runs report test accuracy by class, plus forget accuracy and LiRA AUC/TPR where the target client has records of that class.",
+            "Legacy retain_heldout covers every original-training exclusion, including unassigned Dirichlet records; use assigned_retain_heldout for the retained clients' heldout utility, and unassigned for partition exclusions.",
+            "Categorical, random, uniform, preferential, preferential-mix and Dirichlet runs report class-restricted accuracy and LiRA; categorical runs also report retained-class test accuracy.",
+            "Classical repetitions share a fixed partition and shadow bank; seed uncertainty is conditional on both. Empirical FPR resolution is 1/nonmember_count; lower rates are not resolved by these candidates.",
         ],
         "lira_candidate_members": int(membership.sum()),
         "lira_candidate_nonmembers": int((~membership).sum()),
+        "lira_fpr_resolution": 1 / int((~membership).sum()),
         "lira_nonmembers_train_holdout": int(np.sum(candidates[~membership] < len(labels["train"]))),
         "lira_nonmembers_test": int(np.sum(candidates[~membership] >= len(labels["train"]))),
         "lira_shadow_in_counts": np.unique(shadow_membership.sum(axis=0)).tolist(),

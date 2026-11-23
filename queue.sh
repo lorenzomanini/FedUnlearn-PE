@@ -1,21 +1,30 @@
 #!/bin/bash
-# CINECA Leonardo Booster: CIFAR-100 within-superclass deletion (forget apple).
-# Download once: python -m experiments.configs.cifar100_within_class --download
+# CINECA Leonardo Booster: classical forgetting (default), archived apple tasks.
+# Download once on a network-enabled node:
+#   python -m experiments.configs.classical_unlearning --download
 # Submit from the repository root: sbatch queue.sh
-# KEEP_CHECKPOINTS=1 sbatch queue.sh keeps every *.pt (audit and compaction still run).
-# KEEP_SCORES=1 also keeps full per-coordinate scores as scores.npz (~165 MB per seed).
+# Classical tasks always keep initialization/original/gold checkpoints.
+# For the old apple tasks only: KEEP_CHECKPOINTS=1 keeps *.pt; KEEP_SCORES=1
+# also keeps full per-coordinate scores (~165 MB per seed).
 #
-# Array map (Slurm starts tasks in index order):
+# Array map:
 #   0-2    pilot seeds 3000-3002: controls on the existing job-38148587 checkpoints
 #          (c5 c1 c2 diagonal c4 at ranks 20/40/80), then audit, compact, delete *.pt.
 #          Completed in job 64858158; the pilot checkpoints are deleted, so the default
-#          array below starts at 3.
+#          array below excludes all completed apple tasks.
 #   3-14   seeds 3003-3014, standard recipe: train; core, orange-swap, cross-superclass
 #          swap, leverage and random arms; controls c5 c1 c2 diagonal c4 (ranks 40/80);
 #          audit, compact, delete *.pt.
 #   15-17  seeds 3003-3005, regularized recipe (augmentation + weight decay 5e-4):
 #          train; main arms; controls c5 c2; audit, compact, delete *.pt.
-# Rough GPU time per task: pilot 2 h on A100; standard 6-9 h; regularized 3-4 h.
+#   18-19  CIFAR-10 class 5 deletion: core / diagonal
+#   20-21  CIFAR-10 random-client deletion: core / diagonal
+#   22-23  CIFAR-10 Dirichlet(alpha=0.8)-client deletion: core / diagonal
+# Classical: 12 seeds (4000-4011), ten clients, gold + matched random + fine-tuning,
+# 64 shared LiRA shadows per task; see analysis/tmlr_review_2026-11-23/classical_protocol.md.
+# Classical wall time has not been measured; trial one task before the full batch.
+# Old apple tasks can be selected explicitly with --array; their data require
+# python -m experiments.configs.cifar100_within_class --download.
 #
 # PRE-SPECIFIED PRIMARY CONTRAST, fixed 2026-11-13; amended 2026-11-20 (seeds 3003-3009
 # -> 3003-3014, nothing else) before any confirmatory seed was trained. Source of
@@ -29,7 +38,7 @@
 #   Pilot seeds 3000-3002, the regularized runs and all other contrasts are descriptive.
 
 #SBATCH --account=CASD_prod
-#SBATCH --job-name=c100_within
+#SBATCH --job-name=classical_unlearn
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod
 #SBATCH --nodes=1
@@ -38,7 +47,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=120G
 #SBATCH --time=24:00:00
-#SBATCH --array=3-17%3
+#SBATCH --array=18-23%3
 #SBATCH --output=slurm-%x-%A_%a.out
 #SBATCH --error=slurm-%x-%A_%a.err
 
@@ -51,9 +60,11 @@ PILOT_JOB="${PILOT_JOB:-38148587}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-stat_tests/CIFAR100_within_class}"
 REGULARIZED_ROOT="${REGULARIZED_ROOT:-stat_tests/CIFAR100_within_class_regularized}"
 MODULE="experiments.configs.cifar100_within_class"
+CLASSICAL_MODULE="experiments.configs.classical_unlearning"
+CLASSICAL_ROOT="${CLASSICAL_ROOT:-stat_tests/Classical_unlearning}"
 TASK="${SLURM_ARRAY_TASK_ID:?Submit as an array job; the header sets --array}"
-if [[ ! "${TASK}" =~ ^([0-9]|1[0-7])$ ]]; then
-    echo "Array index ${TASK} must be in 0-17." >&2
+if [[ ! "${TASK}" =~ ^([0-9]|1[0-9]|2[0-3])$ ]]; then
+    echo "Array index ${TASK} must be in 0-23." >&2
     exit 2
 fi
 
@@ -106,13 +117,13 @@ snapshot_source() {  # Record exactly the code this task runs, untracked files i
     git rev-parse HEAD > "${dir}/source_revision.txt"
     git status --short > "${dir}/source_status.txt"
     local files
-    files="$({ git ls-files --cached --others --exclude-standard -- experiments fisherunlearn analysis queue.sh \
+    files="$({ git ls-files --cached --others --exclude-standard -- experiments fisherunlearn analysis validation queue.sh \
                | grep -E '\.(py|sh)$' || true; } | while read -r file; do
                    if [[ -e "${file}" ]]; then echo "${file}"; fi  # skip tracked files deleted locally
                done)"
     {
         git diff HEAD
-        { git ls-files --others --exclude-standard -- experiments fisherunlearn analysis \
+        { git ls-files --others --exclude-standard -- experiments fisherunlearn analysis validation \
             | grep -E '\.py$' || true; } | while read -r file; do
             git diff --no-index -- /dev/null "${file}" || true
         done
@@ -178,7 +189,32 @@ new_seed() {
     finalize "${job_dir}/experiment" "${job_dir}/controls"
 }
 
-if (( TASK <= 2 )); then
+classical_suite() {
+    local suite job_dir
+    suite="$("${PYTHON}" -m "${CLASSICAL_MODULE}" --name "$((TASK - 18))")"
+    job_dir="${CLASSICAL_ROOT}/${suite}_job_${SLURM_ARRAY_JOB_ID}"
+    if [[ -e "${job_dir}" ]]; then
+        echo "Output directory already exists: ${job_dir}. Choose a new output root." >&2
+        exit 2
+    fi
+    mkdir -p "${job_dir}"
+    snapshot_source "${job_dir}"
+    "${PYTHON}" -m "${CLASSICAL_MODULE}" --suite "${suite}" --save-models --describe \
+        > "${job_dir}/protocol.json"
+    # Smoke also verifies that CIFAR-10 is cached before any shadow training.
+    srun "${PYTHON}" -u -m "${CLASSICAL_MODULE}" --suite "${suite}" --smoke --device cuda
+    srun "${PYTHON}" -u -m "${CLASSICAL_MODULE}" --suite "${suite}" --save-models \
+        --output "${job_dir}"
+    # The runner catches individual case failures; audit completeness before success.
+    # Slow unlearning is a scientific outcome, not grounds for rejecting a run.
+    srun "${PYTHON}" -u validation/accuracy_audit/analyze_saved_cifar.py \
+        --input "${job_dir}/${suite}" --output "${job_dir}/audit" --allow-inefficient
+    touch "${job_dir}/COMPLETE"
+}
+
+if (( TASK >= 18 )); then
+    classical_suite
+elif (( TASK <= 2 )); then
     pilot_controls "${PILOT_SEEDS[TASK]}"
 elif (( TASK <= 14 )); then
     new_seed standard "${NEW_SEEDS[TASK - 3]}" "${OUTPUT_ROOT}" \
