@@ -602,11 +602,129 @@ def score_agreement(first, second, top_fraction=0.1):
             "top_set_overlap": overlap}
 
 
+def resolution_diagnostics(whitened_first, whitened_second, scores_first, scores_second):
+    """Paper Prop. resolution: ||s - s'||_1 <= ||B + B'||_2 ||B - B'||_* in one basis."""
+    first, second = whitened_first.double(), whitened_second.double()
+    difference = torch.linalg.eigvalsh((first - second + (first - second).T) * 0.5)
+    nuclear = difference.abs().sum().item()
+    spectral_sum = torch.linalg.matrix_norm(first + second, ord=2).item() if first.numel() else 0.0
+    return {
+        "nuclear_distance": nuclear,
+        "resolution_bound": spectral_sum * nuclear,
+        "score_l1_distance": (scores_first.double() - scores_second.double()).abs().sum().item(),
+    }
+
+
+def _mean_gradient(model, loader, loss_fn, params, device):
+    """Record-weighted mean gradient of a mean-reduced loss, flattened in parameter order."""
+    total, count = None, 0
+    with torch.enable_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            grads = torch.autograd.grad(loss_fn(model(x), y), params, allow_unused=True)
+            flat = torch.cat([(g if g is not None else torch.zeros_like(p)).reshape(-1)
+                              for g, p in zip(grads, params)]).detach() * x.shape[0]
+            total = flat if total is None else total + flat
+            count += x.shape[0]
+    if not count:
+        raise ValueError("gradient estimation requires a nonempty loader")
+    return total / count
+
+
+def theory_diagnostics(evals, projected_target, whitened_target, target_fraction,
+                       retained_count, projected_gradient=None):
+    """Request-level checks of the paper's Section 4 quantities in the scored subspace.
+
+    ``evals`` are the retained eigenvalues Lambda = U^T H U, ``projected_target`` is
+    F = U^T H_T U and ``whitened_target`` is B. Returned values: alpha_T lambda_max(B)
+    (the domination bound is 1); r / Tr(B^2), the leverage-to-score ratio; the endpoint
+    KL of Prop. endpoint under a belief G in span{A, F} with g = 0 (None when some
+    alpha_T beta_k >= 1, where P_0 is degenerate); the smallest eigenvalue of
+    A_0 = Lambda - alpha_T F; and, given g = U^T g_T, I_mean / I_core of Eq. mean_ratio
+    with c_Pi = 1, a resampling belief and N_R = ``retained_count``.
+    """
+    rank = int(evals.numel())
+    result = {"rank": rank, "trace_B2": None, "alpha_lambda_max_B": None,
+              "leverage_to_score_ratio": None, "endpoint_kl_natural_belief": None,
+              "A0_min_eigenvalue": None, "projected_gradient_norm": None,
+              "mean_quadratic_form": None, "mean_to_core_ratio": None}
+    if not rank:
+        return result
+    alpha = float(target_fraction)
+    whitened = whitened_target.double()
+    beta = torch.linalg.eigvalsh((whitened + whitened.T) * 0.5)
+    trace_b2 = whitened.square().sum().item()
+    x = alpha * beta
+    result.update(
+        trace_B2=trace_b2,
+        alpha_lambda_max_B=x.max().item(),
+        leverage_to_score_ratio=rank / trace_b2 if trace_b2 > 0 else None,
+    )
+    if bool((x < 1).all()):
+        clipped = x.clamp_min(0)
+        result["endpoint_kl_natural_belief"] = 0.5 * (
+            clipped.square() - 2 * clipped - 2 * torch.log1p(-clipped)).sum().item()
+    a0 = torch.diag(evals.double()) - alpha * projected_target.double()
+    a0 = (a0 + a0.T) * 0.5
+    a0_min = torch.linalg.eigvalsh(a0).min().item()
+    result["A0_min_eigenvalue"] = a0_min
+    if projected_gradient is not None:
+        g = projected_gradient.double()
+        result["projected_gradient_norm"] = g.norm().item()
+        if a0_min > 0 and trace_b2 > 0:
+            quadratic = (g @ torch.linalg.solve(a0, g)).item()
+            result["mean_quadratic_form"] = quadratic
+            result["mean_to_core_ratio"] = (retained_count / (1 - alpha)) * quadratic / (2 * trace_b2)
+    return result
+
+
+def flat_parameter_indices(selected_params, layout):
+    """Flat coordinates of an argwhere mask; ``layout`` maps name -> (offset, shape)."""
+    pieces = []
+    for name, coords in selected_params.items():
+        if coords is None or coords.numel() == 0:
+            continue
+        offset, shape = layout[name]
+        strides = torch.tensor(
+            [math.prod(shape[i + 1:]) for i in range(len(shape))], dtype=torch.long)
+        pieces.append(offset + (coords.to(torch.long).cpu().reshape(-1, len(shape)) * strides).sum(1))
+    return torch.cat(pieces) if pieces else torch.empty(0, dtype=torch.long)
+
+
+def reset_subspace_diagnostics(basis, scores, reset_indices, chunk=1 << 20, tolerance=1e-6):
+    """Paper Prop. reset: what a reset of ``reset_indices`` does to span(U).
+
+    ``basis`` is U (p x r, orthonormal columns) and ``scores`` the flat score vector.
+    sigma_min(U_K) = sqrt(1 - ||U_R||_2^2) is zero exactly when some direction of
+    span(U) is supported on the reset coordinates; only then can the reset alone remove
+    modeled information. ``directions_supported_on_reset`` counts eigenvalues of
+    U_R^T U_R within ``tolerance`` of one; ``reset_leverage`` is sum_{i in R} l_i (out
+    of r); ``score_mass_fraction`` is the share of sum_i s_i that the reset removes.
+    """
+    rank = basis.shape[1]
+    gram = torch.zeros(rank, rank, dtype=torch.float64)
+    indices = reset_indices.to(torch.long).cpu()
+    for start in range(0, indices.numel(), chunk):
+        rows = basis.index_select(0, indices[start:start + chunk]).double()
+        gram += rows.T @ rows
+    eigenvalues = torch.linalg.eigvalsh((gram + gram.T) * 0.5) if rank else gram.new_empty(0)
+    top = eigenvalues.max().item() if rank else 0.0
+    total = scores.double().sum().item()
+    removed = scores.index_select(0, indices).double().sum().item() if indices.numel() else 0.0
+    return {
+        "reset_count": int(indices.numel()),
+        "sigma_min_kept": math.sqrt(max(0.0, 1.0 - top)),
+        "directions_supported_on_reset": int((eigenvalues > 1 - tolerance).sum().item()),
+        "reset_leverage": gram.trace().item(),
+        "score_mass_fraction": removed / total if total > 0 else None,
+    }
+
+
 def estimate_core_score(
     model, loader_full, loader_a, loss_fn, rank, device,
     num_power_iters=5, hmp_chunk_size=1, curvature_backend="full",
     eigenvalue_threshold=1e-6, relative_eigenvalue_threshold=1e-5,
-    power_tolerance=1e-3, return_evecs=False, loader_control=None,
+    power_tolerance=1e-3, return_evecs=False, loader_control=None, target_gradient=False,
 ):
     """Matrix-free noncommuting core score from document equations (55)--(58).
 
@@ -618,6 +736,8 @@ def estimate_core_score(
     is omitted because it does not affect within-request score-mass selection.
     ``loader_control`` optionally scores a non-target sample in the same basis; its
     agreement with the target score measures how target-specific the ranking is.
+    ``target_gradient`` also returns g = U^T grad L_T on ``loader_a`` (evaluation
+    mode), which enters the mean channel of the information decomposition.
     """
     started = time.perf_counter()
     for name, value in (("eigenvalue_threshold", eigenvalue_threshold),
@@ -672,6 +792,12 @@ def estimate_core_score(
             eigenvalue_threshold=eigenvalue_threshold,
             relative_eigenvalue_threshold=relative_eigenvalue_threshold,
         )
+        projected_gradient, gradient_norm = None, None
+        if target_gradient and result["evecs"].shape[1]:
+            full_gradient = _mean_gradient(model, loader_a, loss_fn, params, device)
+            gradient_norm = full_gradient.norm().item()
+            projected_gradient = result["evecs"].T @ full_gradient.to(result["evecs"].dtype)
+            del full_gradient
         control = None
         if loader_control is not None and bool(keep.any()):
             control_started = time.perf_counter()
@@ -688,6 +814,8 @@ def estimate_core_score(
                 "whitened_target": control_scores["whitened_target"].detach().cpu(),
                 "core_trace": control_scores["diagnostics"]["core_trace"],
                 **score_agreement(result["diag_flat"], control_scores["diag_flat"]),
+                **resolution_diagnostics(result["whitened_target"], control_scores["whitened_target"],
+                                         result["diag_flat"], control_scores["diag_flat"]),
                 "elapsed_seconds": time.perf_counter() - control_started,
             }
             del control_scores
@@ -715,6 +843,8 @@ def estimate_core_score(
     }
     if control is not None:
         diagnostics["control"] = control
+    if gradient_norm is not None:
+        diagnostics["target_gradient_norm"] = gradient_norm
     return {
         "diag_flat": diag_flat,
         "diag_tensors": diag_tensors,
@@ -726,6 +856,8 @@ def estimate_core_score(
         "whitened_target": result["whitened_target"].detach().cpu(),
         "diagnostics": diagnostics,
         "evecs": result["evecs"].detach().cpu() if return_evecs else None,
+        "projected_target_gradient": (projected_gradient.detach().cpu()
+                                      if projected_gradient is not None else None),
     }
 
 

@@ -2,7 +2,10 @@ from fisherunlearn.clients_utils import split_dataset_by_class_distribution, con
 from fisherunlearn import compute_client_information, find_informative_params, find_random_params_matching, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet
 from fisherunlearn import plot_information_parameters_tradeoff
-from fisherunlearn.information.spectral_wip import estimate_core_score, estimate_generalized_core_score
+from fisherunlearn.information.spectral_wip import (
+    estimate_core_score, estimate_generalized_core_score, flat_parameter_indices,
+    reset_subspace_diagnostics, theory_diagnostics,
+)
 
 import fisherunlearn
 
@@ -515,10 +518,12 @@ class _RevisedTest:
                 iterations = init_params_dict.get('spectral_num_power_iters', _num_power_iters)
                 tolerance = init_params_dict.get('spectral_power_tolerance', 1e-3)
                 if subspace == 'top_curvature':
+                    # U is kept for the per-case reset diagnostics (paper Prop. reset).
                     score = estimate_core_score(
                         self.trained_model.to(DEVICE), self.total_loader, self.client_loader,
                         loss_class(), init_params_dict.get('spectral_rank', 10), DEVICE,
-                        num_power_iters=iterations, power_tolerance=tolerance, **options,
+                        num_power_iters=iterations, power_tolerance=tolerance,
+                        return_evecs=True, target_gradient=True, **options,
                     )
                 else:
                     score = estimate_generalized_core_score(
@@ -565,6 +570,13 @@ class _RevisedTest:
                     control_samples=len(self.control_loader.dataset),
                     control_sample_positions=list(self.control_loader.dataset.indices),
                 )
+            if score.get('evecs') is not None:
+                self.score_basis = score['evecs']
+                self.score_diagnostics['theory'] = theory_diagnostics(
+                    score['evals_H'], score['projected_target'], score['whitened_target'],
+                    target_fraction, len(retained_dataset), score.get('projected_target_gradient'),
+                )
+                logging.info('Theory diagnostics: %s', self.score_diagnostics['theory'])
             logging.info(
                 'Core score: retained rank=%s/%s, sum-rule relative error=%.3g, %.2f seconds',
                 score['diagnostics']['retained_rank'], score['diagnostics']['requested_rank'],
@@ -573,6 +585,20 @@ class _RevisedTest:
             if score['diagnostics']['retained_rank'] == 0:
                 logging.warning('No positive curvature directions survived the cutoff; all reset scores are zero.')
         logging.info('Setup stage timings (seconds): %s', self.stage_timings)
+
+    def _subspace_reset_diagnostics(self, *masks):
+        """Prop. reset diagnostics for the core mask and its matched random mask."""
+        layout, offset = {}, 0
+        for name, scores in self.client_information.items():
+            layout[name] = (offset, tuple(scores.shape))
+            offset += scores.numel()
+        if offset != self.score_basis.shape[0]:
+            raise ValueError('score layout does not match the stored basis')
+        scores = torch.cat([value.detach().reshape(-1).cpu() for value in self.client_information.values()])
+        return {
+            arm: reset_subspace_diagnostics(self.score_basis, scores, flat_parameter_indices(mask, layout))
+            for arm, mask in zip(('core', 'random'), masks)
+        }
 
     def configure_lira(self, candidate_dataset, evaluate_lira_function=evaluate_lira):
         self.lira_candidate_dataset = candidate_dataset
@@ -609,6 +635,8 @@ class _RevisedTest:
         selection_seconds = time.perf_counter() - selection_start
         recovery_seconds = 0.0
         random_baseline_seconds = 0.0
+        # Same keys in every case: results are packed by the first case's keys.
+        subspace_reset = None
 
         def recover(model, selected_params, reset_reference=None):
             if recovery_scope == 'all':
@@ -646,6 +674,8 @@ class _RevisedTest:
             random_reset_model.load_state_dict(random_reset_state_dict)
             random_retrained_model = recover(random_reset_model, random_params, reset_reference)
             random_baseline_seconds = time.perf_counter() - random_start
+            if getattr(self, 'score_basis', None) is not None:
+                subspace_reset = self._subspace_reset_diagnostics(informative_params, random_params)
         else:
             reset_model = self.trained_model
             random_reset_model = self.trained_model
@@ -677,6 +707,7 @@ class _RevisedTest:
         extra_results['recovery_seconds'] = recovery_seconds
         extra_results['unlearning_seconds'] = selection_seconds + recovery_seconds
         extra_results['random_baseline_seconds'] = random_baseline_seconds
+        extra_results['subspace_reset'] = subspace_reset
         # Score construction is shared across the sweep, charged once per deletion.
         extra_results['score_seconds'] = self.stage_timings['score_seconds']
         extra_results['unlearning_with_score_seconds'] = (

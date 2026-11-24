@@ -37,7 +37,8 @@ from experiments import runner, spectral_runner
 from experiments.models import create_resnet
 from fisherunlearn import compute_client_information
 from fisherunlearn.information.spectral_wip import (
-    estimate_core_score, estimate_generalized_core_score,
+    estimate_core_score, estimate_generalized_core_score, reset_subspace_diagnostics,
+    theory_diagnostics,
 )
 
 
@@ -236,9 +237,17 @@ def smoke(name, device):
         score = estimate_core_score(
             model.to(device), loader, loader, nn.CrossEntropyLoss(), 2, device, num_power_iters=1,
             curvature_backend=config['spectral_curvature_backend'], loader_control=loader,
+            return_evecs=True, target_gradient=True,
         )
         assert 'control' in score['diagnostics']
+        assert 'nuclear_distance' in score['diagnostics']['control']
         values = score['diag_by_name']
+        # The runner's theory and reset diagnostics (paper Props. natural, endpoint, reset).
+        theory = theory_diagnostics(score['evals_H'], score['projected_target'], score['whitened_target'],
+                                    0.1, 100, score['projected_target_gradient'])
+        assert theory['rank'] == score['evecs'].shape[1] and theory['A0_min_eigenvalue'] is not None
+        reset = reset_subspace_diagnostics(score['evecs'], score['diag_flat'], torch.arange(0, score['evecs'].shape[0], 2))
+        assert 0.0 <= reset['sigma_min_kept'] <= 1.0
     elif suite['method'] == 'generalized':
         retained, target, control = (
             DataLoader(TensorDataset(torch.randn(8, 3, 64, 64), torch.randint(10, (8,))), batch_size=4)

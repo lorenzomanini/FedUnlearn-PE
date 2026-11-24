@@ -135,7 +135,7 @@ def main():
         }
 
     utility_rows, privacy_rows, timing_rows, diagnostic_rows = [], [], [], []
-    per_class_rows = []
+    per_class_rows, subspace_rows = [], []
 
     def record_per_class(base, test, train, lira_values):
         for class_label in class_labels:
@@ -246,6 +246,10 @@ def main():
                 if unchanged:
                     assert np.array_equal(test["pred"], initial_test["trained"]["pred"])
                     assert np.array_equal(train["pred"], initial_train["trained"]["pred"])
+            # Paper Prop. reset: what each mask does to span(U); absent in older runs.
+            subspace_reset = extra.get("subspace_reset", [None] * len(cases))[case_index]
+            for arm, values in (subspace_reset or {}).items():
+                subspace_rows.append({**base, "arm": arm, **values})
             timing_rows.append({
                 **base,
                 "score_seconds": stage["score_seconds"],
@@ -301,6 +305,12 @@ def main():
             "subspace_seconds": inner["subspace"].get("elapsed_seconds"),
             "control_seconds": control.get("elapsed_seconds"),
             "gold_retraining_seconds": stage["gold_retraining_seconds"],
+            # Paper Sections 4-5 diagnostics; None for runs saved before they existed.
+            "target_gradient_norm": inner.get("target_gradient_norm"),
+            **{"theory_" + key: value for key, value in (diagnostics.get("theory") or {}).items()},
+            "control_nuclear_distance": control.get("nuclear_distance"),
+            "control_resolution_bound": control.get("resolution_bound"),
+            "control_score_l1_distance": control.get("score_l1_distance"),
         })
 
     for name, rows in [("utility", utility_rows), ("privacy", privacy_rows), ("timings", timing_rows)]:
@@ -312,6 +322,8 @@ def main():
         save_csv(output, "cifar_per_class_summary.csv",
                  summarize(per_class_rows, CASE_FIELDS + ["model", "class_label"]))
     save_csv(output, "cifar_score_diagnostics.csv", diagnostic_rows)
+    if subspace_rows:
+        save_csv(output, "cifar_subspace_reset_per_run.csv", subspace_rows)
     efficiency_pass = all(
         np.isfinite(row['cost_fraction_of_gold']) and
         0 <= row['cost_fraction_of_gold'] < 1
