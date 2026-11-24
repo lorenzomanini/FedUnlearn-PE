@@ -19,7 +19,7 @@ from torch import nn
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 from sklearn.metrics import roc_auc_score, roc_curve
 
-from analysis.results import fit_lira_distributions
+from stat_tests.analysis.results import fit_lira_distributions
 from experiments.cifar_recovery_ablation import read_pickle, recover, synchronized_time
 from experiments.datasets import get_datasets
 from experiments.evaluation import evaluate_lira, evaluate_model

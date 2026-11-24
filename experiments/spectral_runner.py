@@ -1,4 +1,4 @@
-from analysis.results import plot_experiment_results
+from stat_tests.analysis.results import plot_experiment_results
 from fisherunlearn.clients_utils import split_dataset_by_class_distribution, concatenate_subsets, random_split_subset, create_poisoned_data, poisoning_data
 from fisherunlearn import compute_client_information, find_informative_params, reset_parameters, mia_attack
 from fisherunlearn import UnlearnNet

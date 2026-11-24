@@ -6,6 +6,6 @@ if __name__ == "__main__":
     runpy.run_module("analysis.results", run_name="__main__")
 else:
     import sys
-    from analysis import results as _implementation
+    from stat_tests.analysis import results as _implementation
 
     sys.modules[__name__] = _implementation
